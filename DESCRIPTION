@@ -1,0 +1,8 @@
+Package: Blnr
+Title: Blnr Project
+Version: 0.1.0
+Authors@R: person("Ваше Имя", email = "your.email@example.com", role = c("aut", "cre"))
+Description: Описание вашего проекта.
+License: MIT
+Encoding: UTF-8
+LazyData: true

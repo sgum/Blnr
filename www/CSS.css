@@ -1,0 +1,8 @@
+@font-face {  
+  src: url(Panton-Regular.otf);
+  font-family: "Panton";
+}
+
+.p_Style {
+	font-family: 'Panton';
+}
