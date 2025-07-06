@@ -4,3 +4,10 @@
 .Ruserdata
 265.MatrixProd/
 matrix_benchmark/265/
+
+# Большие файлы в matrix_benchmark
+matrix_benchmark/04_results/plots/**/*.min.js
+matrix_benchmark/04_results/plots/**/*.html
+matrix_benchmark/04_results/all_benchmarks.xlsx
+matrix_benchmark/04_results/benchmark_rating.xlsx
+matrix_benchmark/05_artifacts/*
