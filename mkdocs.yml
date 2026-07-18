@@ -1,0 +1,41 @@
+site_name: "Blnr"
+docs_dir: "docs"
+site_description: "Карта проекта Blnr для AI-агентов"
+site_url: ""
+
+theme:
+  name: material
+  language: ru
+  features:
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - content.code.copy
+
+plugins:
+  - search:
+      lang:
+        - ru
+        - en
+
+exclude_docs: |
+  index.html
+
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
+  - tables
+
+validation:
+  nav:
+    omitted_files: ignore
+  links:
+    not_found: ignore
+    anchors: ignore
+    absolute_links: ignore
+
+nav:
+- Главная: index.md
+- docs:
+  - README: docs/README.md
