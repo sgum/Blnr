@@ -2,6 +2,7 @@
 .Rhistory
 .RData
 .Ruserdata
+.Renviron
 265.MatrixProd/
 matrix_benchmark/265/
 

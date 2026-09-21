@@ -1,0 +1,11 @@
+# Скопируйте этот файл в .Renviron (он уже в .gitignore) и заполните
+# реальными значениями из личного кабинета Exante: API Management ->
+# создать приложение (Application). Подробности — в docs/EXANTE_API.md.
+# Никогда не коммитьте .Renviron и не вставляйте эти значения в код.
+
+EXANTE_CLIENT_ID=
+EXANTE_APP_ID=
+EXANTE_SHARED_KEY=
+
+# "live" (боевой счёт, по умолчанию) или "demo" (тестовый контур)
+EXANTE_ENV=live

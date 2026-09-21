@@ -30,6 +30,7 @@ sidebarUI <- function() {
             column(12, actionButton("download_data", "", icon = icon("download"), title = "Скачать данные"))
           )
         ),
+        bs4SidebarMenuItem("Портфель Exante", tabName = "portfolio_monitoring", icon = icon("wallet")),
         bs4SidebarMenuItem("Загрузка прогнозов", tabName = "tab2", icon = icon("upload"))
       )
     )
