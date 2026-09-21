@@ -23,8 +23,22 @@ portfolio_holdings <- data.table::data.table(
   purchase_date = as.Date("2026-09-14")
 )
 
-# Клиент Exante API и бизнес-логика вкладки "Портфель Exante"
+# Прогноз относительного роста (в файле пользователя) считается от уровня,
+# достигнутого бумагами к этой дате.
+FORECAST_BASELINE_DATE <- as.Date("2026-09-11")
+
+# Путь к xlsx с прогнозом по умолчанию: если файл существует локально при
+# старте сессии, он подхватывается автоматически (см. server.R); при
+# необходимости переопределите переменной окружения FORECAST_XLSX_PATH,
+# либо загрузите другой файл прямо во вкладке "Загрузка прогнозов".
+FORECAST_XLSX_PATH <- Sys.getenv(
+  "FORECAST_XLSX_PATH",
+  unset = path.expand("~/Downloads/Portfolio (1).xlsx")
+)
+
+# Клиент Exante API и бизнес-логика вкладок "Портфель Exante" / "Загрузка прогнозов"
 source("R/exante_api.R")
 source("R/portfolio.R")
+source("R/forecast.R")
 
 # shiny::runApp()

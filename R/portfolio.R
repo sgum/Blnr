@@ -66,16 +66,24 @@ get_last_close <- function(ticker) {
 # стоимость, абсолютный рост (%), вес в портфеле, P&L. Цена входа/текущая
 # цена берутся из positions (Exante API или portfolio_holdings), когда
 # известны; недостающие значения досчитываются через Yahoo (quantmod).
+#
+# Дополнительно считается growth_from_base_pct — рост от base_date
+# (по умолчанию FORECAST_BASELINE_DATE, 11.09.2026), а не от цены покупки:
+# именно от этой даты считается прогноз в файле пользователя (см.
+# R/forecast.R), так что сравнивать факт с прогнозом нужно на одной базе.
 build_portfolio_metrics <- function(positions = get_portfolio_positions(),
-                                     entry_date = min(portfolio_holdings$purchase_date)) {
+                                     entry_date = min(portfolio_holdings$purchase_date),
+                                     base_date = FORECAST_BASELINE_DATE) {
   dt <- data.table::copy(positions)
 
   dt[is.na(entry_price),   entry_price   := sapply(ticker, get_close_on_date, date = entry_date)]
   dt[is.na(current_price), current_price := sapply(ticker, get_last_close)]
+  dt[, base_price := sapply(ticker, get_close_on_date, date = base_date)]
 
   dt[, entry_value   := quantity * entry_price]
   dt[, current_value := quantity * current_price]
-  dt[, growth_pct    := (current_price / entry_price - 1) * 100]
+  dt[, growth_pct     := (current_price / entry_price - 1) * 100]
+  dt[, growth_from_base_pct := (current_price / base_price - 1) * 100]
   dt[, pnl           := current_value - entry_value]
 
   total_current <- sum(dt$current_value, na.rm = TRUE)

@@ -7,7 +7,10 @@ portfolioMonitoringUI <- function() {
       column(
         12,
         uiOutput("portfolio_source_status"),
-        actionButton("portfolio_refresh", "Обновить котировки", icon = icon("rotate"))
+        uiOutput("forecast_status"),
+        actionButton("portfolio_refresh", "Обновить котировки", icon = icon("rotate")),
+        tags$span("Файл прогноза загружается на вкладке «Загрузка прогнозов».",
+                   style = "margin-left:10px; font-size:11px; color:#777;")
       )
     ),
     br(),
