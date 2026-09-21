@@ -5,7 +5,12 @@
 # вручную заданному портфелю portfolio_holdings из global.R) и расчёт
 # роста от даты покупки.
 
-# Позиции портфеля: ticker, quantity, source ("exante" | "manual").
+# Позиции портфеля: ticker, quantity, entry_price, current_price, source
+# ("exante" | "manual"). Цена входа и текущая цена берутся напрямую из
+# Exante API, если он настроен (это фактическая средняя цена исполнения и
+# последняя цена по счёту); иначе используются данные из
+# portfolio_holdings (реальные цены исполнения ордеров) и текущая цена
+# заполняется позже котировкой с Yahoo (см. build_portfolio_metrics()).
 get_portfolio_positions <- function() {
   if (exante_has_credentials()) {
     accounts <- exante_get_accounts()
@@ -16,16 +21,20 @@ get_portfolio_positions <- function() {
         dt <- exante_positions_to_dt(positions)
         if (nrow(dt) > 0) {
           dt[, source := "exante"]
-          data.table::setnames(dt, "symbolId", "ticker")
-          return(dt[, .(ticker, quantity, source)])
+          data.table::setnames(dt,
+            c("symbolId", "averagePrice", "price"),
+            c("ticker", "entry_price", "current_price")
+          )
+          return(dt[, .(ticker, quantity, entry_price, current_price, source)])
         }
       }
     }
   }
 
   dt <- data.table::copy(portfolio_holdings)
+  dt[, current_price := NA_real_]
   dt[, source := "manual"]
-  dt[, .(ticker, quantity, source)]
+  dt[, .(ticker, quantity, entry_price, current_price, source)]
 }
 
 # Цена закрытия тикера на дату (или ближайший предыдущий торговый день) —
@@ -54,13 +63,15 @@ get_last_close <- function(ticker) {
 }
 
 # Полная таблица метрик портфеля: количество, цена входа, текущая цена,
-# стоимость, абсолютный рост (%), вес в портфеле, P&L.
+# стоимость, абсолютный рост (%), вес в портфеле, P&L. Цена входа/текущая
+# цена берутся из positions (Exante API или portfolio_holdings), когда
+# известны; недостающие значения досчитываются через Yahoo (quantmod).
 build_portfolio_metrics <- function(positions = get_portfolio_positions(),
                                      entry_date = min(portfolio_holdings$purchase_date)) {
   dt <- data.table::copy(positions)
 
-  dt[, entry_price   := sapply(ticker, get_close_on_date, date = entry_date)]
-  dt[, current_price := sapply(ticker, get_last_close)]
+  dt[is.na(entry_price),   entry_price   := sapply(ticker, get_close_on_date, date = entry_date)]
+  dt[is.na(current_price), current_price := sapply(ticker, get_last_close)]
 
   dt[, entry_value   := quantity * entry_price]
   dt[, current_value := quantity * current_price]
