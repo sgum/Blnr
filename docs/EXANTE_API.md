@@ -7,13 +7,13 @@ Yahoo Finance через `quantmod`.
 
 ## Получение учётных данных
 
-1. Войдите в личный кабинет Exante (`https://exante.eu`) → раздел
-   **API Management**.
-2. Создайте приложение (Application) и выберите нужные разрешения
-   (scopes): как минимум `accounts`, `summary`, `symbols`, `feed`,
-   `crossrates`, `change`, `transactions`.
-3. Сохраните три значения: **Client ID**, **Application ID (App ID)** и
-   **Shared key**. Shared key показывается один раз — сохраните его сразу.
+1. Войдите в личный кабинет Exante (`https://exante.eu`) → раздел **API**.
+2. Создайте доступ и выберите разрешения (scopes): как минимум `accounts`,
+   `summary`, `symbols`, `feed`, `crossrates`, `change`, `orders`,
+   `transactions`.
+3. Сохраните **два** значения: идентификатор приложения (в кабинете строка
+   **«api»**, это UUID) и **секретный ключ**. Секретный ключ показывается
+   один раз — сохраните сразу.
 
 ## Настройка приложения
 
@@ -21,38 +21,56 @@ Yahoo Finance через `quantmod`.
 репозиторий не попадёт) и заполните:
 
 ```
-EXANTE_CLIENT_ID=...
-EXANTE_APP_ID=...
-EXANTE_SHARED_KEY=...
-EXANTE_ENV=live   # или demo для тестового контура
+EXANTE_API_ID=...        # строка "api" из кабинета (UUID)
+EXANTE_SHARED_KEY=...     # секретный ключ
+EXANTE_ENV=live          # или demo для тестового контура
 ```
 
 Перезапустите Shiny-приложение — `R/exante_api.R` подхватит переменные
 окружения через `Sys.getenv()`.
 
+## Аутентификация — HTTP Basic (важно, проверено 22.09.2026)
+
+Выданная кабинетом пара работает по схеме **HTTP Basic**:
+
+```
+Authorization: Basic base64("<EXANTE_API_ID>:<EXANTE_SHARED_KEY>")
+```
+
+на боевом контуре `https://api-live.exante.eu`.
+
+**JWT-схема из трёх значений (Client ID + App ID + Shared key) с этими
+кредами НЕ проходит** — даёт `401 The supplied authentication is invalid`.
+Basic на той же паре возвращает `200`. Прочие грабли: `base64` не должен
+переносить строку (обрезаем пробелы/переносы в токене), а боевой ключ
+работает только на `api-live` (к `api-demo` не подходит).
+
 ## Как это работает
 
-- `R/exante_api.R` — низкоуровневый клиент: собирает подписанный JWT
-  (HS256, `iss` = Client ID, `sub` = App ID, подпись — Shared key) и
-  дергает REST API v3.0 (`https://api-live.exante.eu` /
-  `https://api-demo.exante.eu`).
-- `R/portfolio.R` — бизнес-логика: получает список счетов
-  (`GET /trade/3.0/accounts`), берёт сводку и позиции первого счёта
-  (`GET /trade/3.0/summary/{accountId}/{currency}`) и считает рост
-  каждой бумаги от цены закрытия на дату покупки.
-- Если `EXANTE_CLIENT_ID` / `EXANTE_APP_ID` / `EXANTE_SHARED_KEY` не
-  заданы, или запрос к API возвращает ошибку, приложение молча
-  переключается на портфель из `portfolio_holdings` — вкладка никогда не
-  падает из-за отсутствия доступа.
+- `R/exante_api.R` — низкоуровневый клиент: Basic-заголовок и REST-запросы.
+  Проверенная карта эндпоинтов:
+  - `GET /md/2.0/accounts` — список счетов (`[{accountId, status}]`);
+  - `GET /md/2.0/summary/{accountId}/{currency}` — сводка и позиции
+    (поле позиции `id` = symbolId; `quantity`, `averagePrice`, `price`,
+    `convertedValue`, `pnl`, `currency`);
+  - `GET /trade/3.0/orders?limit=...` — история ордеров;
+  - `GET /md/2.0/transactions?accountId=...&fromDate=ISO&limit=...` —
+    транзакции (сделки, дивиденды, комиссии);
+  - `GET /md/2.0/feed/{symbolId}/last` — последняя котировка.
+- `R/portfolio.R` — бизнес-логика: получает список счетов, перебирает их и
+  берёт первый счёт с непустыми позициями (у профиля несколько суб-счетов,
+  первый нередко пуст), приводит symbolId к тикеру (`NVDA.NASDAQ` → `NVDA`)
+  и считает рост каждой бумаги.
+- Если `EXANTE_API_ID` / `EXANTE_SHARED_KEY` не заданы, или запрос к API
+  возвращает ошибку, приложение молча переключается на портфель из
+  `portfolio_holdings` — вкладка никогда не падает из-за отсутствия доступа.
 
 ## Важно
 
 - **Никогда** не храните `EXANTE_SHARED_KEY` в коде, коммитах или в
   клиентском (браузерном) JavaScript — это боевой ключ доступа к счёту.
-- Пути эндпоинтов приведены по документации Exante API v3.0
-  (`api-docs.exante.eu`) на момент написания; перед первым боевым
-  использованием сверьте их с актуальной документацией — брокерские API
-  иногда меняют версии/пути.
-- Для многосчётных профилей `get_portfolio_positions()` сейчас берёт
-  первый счёт из списка (`accounts[[1]]`) — при необходимости добавьте
-  выбор счёта в UI (`selectInput`) и передавайте `account_id` явно.
+- Для многосчётных профилей `get_portfolio_positions()` берёт первый счёт с
+  позициями. Если нужен явный выбор — добавьте `selectInput` в UI и
+  передавайте `account_id` в `exante_get_positions()`.
+- Тот же доступ оформлен как личный навык `sg-exante` (репозиторий 269) —
+  там же операционные заметки и порядок инициализации на других машинах.

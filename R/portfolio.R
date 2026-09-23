@@ -15,15 +15,21 @@ get_portfolio_positions <- function() {
   if (exante_has_credentials()) {
     accounts <- exante_get_accounts()
     if (is.null(accounts$error) && length(accounts) > 0) {
-      account_id <- accounts[[1]]$id
-      positions  <- exante_get_positions(account_id)
-      if (is.null(positions$error)) {
+      # Поле счёта — accountId (не id). Берём первый счёт, где реально есть
+      # позиции: у пользователя несколько суб-счетов, и первый нередко пуст.
+      account_ids <- vapply(accounts, function(a) a$accountId %||% a$id %||% NA_character_,
+                            character(1))
+      account_ids <- account_ids[!is.na(account_ids)]
+      for (account_id in account_ids) {
+        positions <- exante_get_positions(account_id)
+        if (!is.null(positions$error)) next
         dt <- exante_positions_to_dt(positions)
         if (nrow(dt) > 0) {
+          dt[, ticker := exante_symbol_to_ticker(symbolId)]
           dt[, source := "exante"]
           data.table::setnames(dt,
-            c("symbolId", "averagePrice", "price"),
-            c("ticker", "entry_price", "current_price")
+            c("averagePrice", "price"),
+            c("entry_price", "current_price")
           )
           return(dt[, .(ticker, quantity, entry_price, current_price, source)])
         }
