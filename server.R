@@ -10,7 +10,47 @@ library(shinyjs)
 library(fresh)
 
 shinyServer(function(input, output, session) {
-  
+
+  # Авторизация (шлюз) ####
+  # Финансовый стенд: до входа рисуется форма, дашборд создаётся только после
+  # успешной проверки (AD + белый список), поэтому данные не уходят в браузер
+  # раньше входа. См. R/auth_ad.R и ui/{login,dashboard}_ui.R.
+  USER <- reactiveValues(login = NULL)
+
+  output$gate <- renderUI({
+    if (is.null(USER$login)) loginUI() else dashboardUI()
+  })
+
+  observeEvent(input$auth_submit, {
+    res <- tryCatch(auth_check(input$auth_login, input$auth_password),
+                    error = function(e) list(ok = FALSE))
+    if (isTRUE(res$ok)) {
+      cat(sprintf("[AUTH] OK login=%s %s\n", res$login, format(Sys.time())))
+      USER$login <- res$login
+    } else {
+      # Единая ошибка: не различаем «нет пользователя» и «неверный пароль».
+      output$login_error <- renderUI(
+        tags$div(class = "dt-auth-err", "Неверный логин или пароль, либо нет доступа к стенду.")
+      )
+      cat(sprintf("[AUTH] FAIL login=%s %s\n",
+                  normalize_login(input$auth_login %||% ""), format(Sys.time())))
+    }
+  })
+
+  output$logout_ui <- renderUI({
+    req(USER$login)
+    tags$a(href = "#", onclick = "Shiny.setInputValue('auth_logout', Math.random());",
+           style = "color:#15120F; padding:0 12px; line-height:56px; display:inline-block;",
+           title = paste0("Выйти (", USER$login, ")"),
+           icon("right-from-bracket"), " Выйти")
+  })
+
+  observeEvent(input$auth_logout, {
+    cat(sprintf("[AUTH] LOGOUT login=%s %s\n", USER$login %||% "", format(Sys.time())))
+    USER$login <- NULL
+    session$reload()
+  })
+
   # Реактивная загрузка данных акций с учетом выбранных дат
   stock_data <- reactive({
     req(input$ticker)
@@ -115,6 +155,26 @@ shinyServer(function(input, output, session) {
     summarize_portfolio(portfolio_metrics())
   })
 
+  # Накопление невязки во времени ####
+
+  # История снимков (факт/прогноз по дням). Обновляется реактивно после записи.
+  snapshots_rv <- reactiveVal(read_snapshots())
+
+  # Раз в день, когда есть посчитанные метрики с загруженным прогнозом,
+  # дописываем снимок в CSV-лог (идемпотентно по дате) и обновляем историю.
+  snapshot_done <- reactiveVal(NULL)
+  observe({
+    m <- portfolio_metrics()
+    today <- Sys.Date()
+    if (!is.null(m) && nrow(m) > 0 && !all(is.na(m$forecast_pct)) &&
+        !identical(snapshot_done(), today)) {
+      if (isTRUE(record_snapshot(m, as_of = today))) {
+        snapshot_done(today)
+        snapshots_rv(read_snapshots())
+      }
+    }
+  })
+
   # Прогноз роста (из xlsx) ####
 
   forecast_data   <- reactiveVal(NULL)
@@ -136,14 +196,15 @@ shinyServer(function(input, output, session) {
     req(input$forecast_file)
     sheets <- tryCatch(forecast_sheet_names(input$forecast_file$datapath), error = function(e) character(0))
     if (length(sheets) <= 1) return(NULL)
-    selectInput("forecast_sheet", "Лист", choices = sheets, selected = sheets[1])
+    sel <- if ("Q_mean_var" %in% sheets) "Q_mean_var" else sheets[1]
+    selectInput("forecast_sheet", "Лист", choices = sheets, selected = sel)
   })
 
   observe({
     req(input$forecast_file)
-    sheet <- input$forecast_sheet %||% 1
+    sheet <- input$forecast_sheet %||% forecast_default_sheet(input$forecast_file$datapath)
     parsed <- tryCatch(
-      parse_forecast_file(input$forecast_file$datapath, sheet = sheet, share_input = isTRUE(input$forecast_is_share)),
+      parse_forecast_file(input$forecast_file$datapath, sheet = sheet, as_fraction = isTRUE(input$forecast_is_share)),
       error = function(e) {
         showNotification(paste("Ошибка чтения файла прогноза:", conditionMessage(e)), type = "error", duration = 10)
         NULL
@@ -175,7 +236,13 @@ shinyServer(function(input, output, session) {
     fd <- forecast_data()
     req(fd)
     wide <- data.table::dcast(fd, date ~ ticker, value.var = "forecast_growth_pct")
-    wide[order(date)]
+    data.table::setorder(wide, date)
+    # Прогноз длинный (сотни торговых дней) — показываем только ближайший
+    # горизонт, чтобы превью не разрослось на весь экран.
+    wide <- utils::head(wide, 20L)
+    # date — это Date; renderTable иначе печатает его числом-серийником.
+    wide[, date := format(date, "%Y-%m-%d")]
+    wide
   }, striped = TRUE, digits = 2)
 
   output$portfolio_source_status <- renderUI({
@@ -184,7 +251,7 @@ shinyServer(function(input, output, session) {
                  style = "color: #2e7d32; font-weight: bold;")
     } else {
       tags$span(icon("triangle-exclamation"),
-                 " Exante API не настроен (нет EXANTE_CLIENT_ID / EXANTE_APP_ID / EXANTE_SHARED_KEY) — ",
+                 " Exante API не настроен (нет EXANTE_API_ID / EXANTE_SHARED_KEY) — ",
                  "используется портфель, заданный вручную, с котировками Yahoo Finance. См. docs/EXANTE_API.md.",
                  style = "color: #b26a00; font-weight: bold;")
     }
@@ -260,5 +327,49 @@ shinyServer(function(input, output, session) {
         yaxis = list(title = "%"),
         font = list(family = "Panton")
       )
+  })
+
+  # Динамика невязки (факт − прогноз) по мере накопления снимков.
+  output$deviation_history_note <- renderUI({
+    snaps <- snapshots_rv()
+    n_days <- length(unique(snaps$date))
+    if (n_days == 0) {
+      tags$p("История пока пуста. Снимок факта/прогноза пишется автоматически ",
+             "раз в день при открытии вкладки (нужен загруженный прогноз). ",
+             "График появится, когда наберётся хотя бы один день.",
+             style = "font-size:11px; color:#777;")
+    } else if (n_days == 1) {
+      tags$p(sprintf("Пока один день истории (%s) — динамика появится со второго снимка. ",
+                     format(max(snaps$date))),
+             "Лог: ", tags$code(SNAPSHOT_LOG_PATH),
+             style = "font-size:11px; color:#777;")
+    } else {
+      tags$p(sprintf("Дней в истории: %d (%s — %s).", n_days,
+                     format(min(snaps$date)), format(max(snaps$date))),
+             style = "font-size:11px; color:#777;")
+    }
+  })
+
+  output$deviation_history_plot <- renderPlotly({
+    snaps <- snapshots_rv()
+    req(nrow(snaps) > 0)
+    data.table::setorder(snaps, date)
+    days <- format(sort(unique(snaps$date)), "%Y-%m-%d")
+    p <- plot_ly()
+    for (tk in sort(unique(snaps$ticker))) {
+      sub <- snaps[ticker == tk]
+      p <- add_trace(p, x = format(sub$date, "%Y-%m-%d"), y = sub$dev_pct, name = tk,
+                     type = "scatter",
+                     mode = if (nrow(sub) == 1) "markers" else "lines+markers")
+    }
+    p %>% layout(
+      title = "Невязка факт − прогноз, пп (от 11.09.2026)",
+      # категориальная ось: при одном дне plotly иначе растягивает время до
+      # долей секунды.
+      xaxis = list(title = "Дата снимка", type = "category",
+                   categoryorder = "array", categoryarray = days),
+      yaxis = list(title = "пп"),
+      font = list(family = "Panton")
+    )
   })
 })

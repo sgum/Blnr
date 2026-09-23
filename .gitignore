@@ -3,6 +3,10 @@
 .RData
 .Ruserdata
 .Renviron
+
+# Накопительный лог снимков портфеля (машинно-локальная история, пишется приложением)
+data/portfolio_snapshots.csv
+
 265.MatrixProd/
 matrix_benchmark/265/
 

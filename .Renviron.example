@@ -1,11 +1,37 @@
-# Скопируйте этот файл в .Renviron (он уже в .gitignore) и заполните
-# реальными значениями из личного кабинета Exante: API Management ->
-# создать приложение (Application). Подробности — в docs/EXANTE_API.md.
-# Никогда не коммитьте .Renviron и не вставляйте эти значения в код.
+# Скопируйте этот файл в .Renviron (он уже в .gitignore) и заполните.
+# НИКОГДА не коммитьте .Renviron и не вставляйте эти значения в код.
 
-EXANTE_CLIENT_ID=
-EXANTE_APP_ID=
+# --- Exante API (раздел «API» в кабинете: пара "api" (UUID) + "секретный ключ").
+#     Клиент использует HTTP Basic (base64("api:ключ")) — см. docs/EXANTE_API.md.
+EXANTE_API_ID=
 EXANTE_SHARED_KEY=
-
-# "live" (боевой счёт, по умолчанию) или "demo" (тестовый контур)
+# "live" (боевой, по умолчанию) или "demo". Боевой ключ работает только на live.
 EXANTE_ENV=live
+
+# --- Прогноз и история --------------------------------------------------------
+# Путь к xlsx с прогнозом (лист Q_mean_var). Для нового портфеля — свой файл.
+FORECAST_XLSX_PATH=
+# Куда писать накопительный лог снимков (на сервере — постоянный том вне
+# git-checkout, напр. /mnt/data-external/Blnr-data/portfolio_snapshots.csv).
+BLNR_SNAPSHOT_LOG=
+
+# --- Авторизация (AD) — см. docs/EXANTE_API.md, dt-auth ------------------------
+# Белый список: кого пускать на стенд (короткие логины через запятую).
+BLNR_ALLOWED_USERS=s.gumerov,v.alad
+# Доменная проверка. TRUE — включить AD; на сервере ЦД значения ниже стандартные.
+AD_ENABLED=TRUE
+AD_LDAP_URL=ldaps://ad.dtwin.ru:636
+AD_UPN_SUFFIX=@ad.dtwin.ru
+AD_BASE_DN=DC=ad,DC=dtwin,DC=ru
+AD_NETBIOS=AD
+AD_MAIL_DOMAIN=dtwin.ru
+# Путь к CA-сертификату домена на сервере. Пусто → LDAPS без проверки серта
+# (шифрование есть, защиты от подмены контроллера нет — только с предупреждением).
+AD_CA_CERT=
+AD_TIMEOUT=5
+AD_COOLDOWN=60
+
+# Локальный резерв на случай недоступности AD (bcrypt-хеши, не открытый текст):
+#   "login:$2a$...;login2:$2a$..."  (сгенерировать: Rscript -e 'cat(bcrypt::hashpw("пароль"))')
+# Оставьте пустым, если резерв не нужен.
+BLNR_LOCAL_USERS=

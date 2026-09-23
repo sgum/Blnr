@@ -46,6 +46,17 @@ portfolioMonitoringUI <- function() {
         width = 12,
         plotlyOutput("portfolio_growth_plot")
       )
+    ),
+    fluidRow(
+      bs4Card(
+        title = "Накопление невязки прогноза во времени",
+        status = "primary",
+        solidHeader = TRUE,
+        collapsible = TRUE,
+        width = 12,
+        uiOutput("deviation_history_note"),
+        plotlyOutput("deviation_history_plot")
+      )
     )
   )
 }
