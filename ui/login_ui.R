@@ -79,9 +79,17 @@ loginCSS <- function() {
       font-family:Panton;}
     .dt-auth-switch{text-align:center;margin-top:14px;font-size:13px;color:#8a8a8a;font-family:Panton;}
     .dt-auth-switch a{color:#b26a00;text-decoration:none;font-weight:600;}
-    .dt-auth-card .form-group{margin-bottom:14px;}
-    .dt-auth-card input.form-control{font-size:13px;padding:8px 34px 8px 10px;height:auto;
-      font-family:Panton;}
+    /* ui.R не использует fluidPage()/bootstrapPage() (шлюз строится вручную
+       через tagList()), поэтому Bootstrap CSS не подключается — class=
+       'form-control' сам по себе ничего не даёт, ширина полей откатывается
+       на нативную (браузер по умолчанию ~20 символов). Кнопка была широкой
+       только потому, что actionButton(width='100%') пишет инлайн-стиль в
+       обход Bootstrap — отсюда несовпадение ширины полей и кнопки. Задаём
+       геометрию явно, не полагаясь на фреймворк, которого здесь нет. */
+    .dt-auth-card .form-group{margin-bottom:14px;width:100%;}
+    .dt-auth-card input.form-control{box-sizing:border-box;width:100%;font-size:13px;
+      padding:8px 34px 8px 10px;height:auto;font-family:Panton;border:1px solid #ccc;
+      border-radius:4px;}
     .dt-auth-card .shiny-label-null{display:none;}
     .dt-auth-err{color:#c62828;font-size:12px;margin-top:12px;text-align:center;font-family:Panton;}
   "))
