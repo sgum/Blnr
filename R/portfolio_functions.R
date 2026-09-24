@@ -28,10 +28,14 @@ match_ticker <- function(name) {
 }
 
 # Читает файл прогноза: широкий формат (дата + столбец на каждую акцию).
-# Значения могут быть заданы как доли (0.02), проценты (2) или уровни цены —
-# масштаб определяется автоматически по каждому столбцу отдельно, и всё
-# приводится к темпу роста (доля) от forecast_base_date.
-read_forecast_xlsx <- function(path) {
+# value_type задаёт, как заданы значения в файле — угадывать масштаб по
+# величине ненадёжно (напр. у "тихой" акции все значения в процентах могут
+# быть < 1.5 и выглядеть как доли), поэтому масштаб выбирает пользователь:
+#   "percent"  — проценты, напр. 2 = +2% (формат TempData в этом проекте)
+#   "fraction" — доли, напр. 0.02 = +2%
+#   "price"    — уровни цены -> темп роста считается от первой даты в файле
+read_forecast_xlsx <- function(path, value_type = c("percent", "fraction", "price")) {
+  value_type <- match.arg(value_type)
   raw <- openxlsx::read.xlsx(path, detectDates = TRUE)
   if (nrow(raw) == 0) stop("Файл прогноза пуст")
 
@@ -55,13 +59,11 @@ read_forecast_xlsx <- function(path) {
   }))
   long <- long[!is.na(value)]
 
-  long[, forecast_growth := {
-    m <- median(abs(value), na.rm = TRUE)
-    if (is.na(m)) value
-    else if (m <= 1.5) value                       # уже доли, напр. 0.02 = +2%
-    else if (m <= 100) value / 100                  # проценты, напр. 2 = +2%
-    else value / value[which.min(date)] - 1         # уровни цены -> темп роста от первой даты
-  }, by = ticker]
+  long[, forecast_growth := switch(value_type,
+    fraction = value,
+    percent  = value / 100,
+    price    = value / value[which.min(date)] - 1
+  ), by = ticker]
 
   long[order(ticker, date), .(date, ticker, forecast_growth)]
 }

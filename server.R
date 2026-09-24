@@ -99,7 +99,7 @@ shinyServer(function(input, output, session) {
   forecast_data <- reactive({
     req(input$forecast_file)
     tryCatch(
-      read_forecast_xlsx(input$forecast_file$datapath),
+      read_forecast_xlsx(input$forecast_file$datapath, value_type = input$forecast_value_type),
       error = function(e) {
         validate(need(FALSE, paste("Ошибка чтения файла прогноза:", e$message)))
       }

@@ -9,8 +9,15 @@ portfolioMonitoringUI <- function() {
           title = "Файл прогноза", width = 12, collapsible = FALSE,
           p("Загрузите файл с расчётными темпами роста акций портфеля (уровень на 11.09.2026, прогноз с 14.09.2026). ",
             "Формат: столбец с датой + по столбцу на каждую акцию (GS, GE, AMD, GOOG, NVDA или название компании)."),
-          fileInput("forecast_file", label = NULL, accept = ".xlsx",
-                     buttonLabel = "Обзор...", placeholder = "Файл не выбран")
+          fluidRow(
+            column(8, fileInput("forecast_file", label = NULL, accept = ".xlsx",
+                                  buttonLabel = "Обзор...", placeholder = "Файл не выбран")),
+            column(4, radioButtons("forecast_value_type", "Значения в файле",
+                                     choices = c("Проценты (2 = +2%)" = "percent",
+                                                 "Доли (0.02 = +2%)" = "fraction",
+                                                 "Уровни цены" = "price"),
+                                     selected = "percent"))
+          )
         )
       )
     ),
