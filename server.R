@@ -93,4 +93,114 @@ shinyServer(function(input, output, session) {
       write.xlsx(stock_data(), file)
     }
   )
+
+  # Мониторинг портфеля ####
+
+  forecast_data <- reactive({
+    req(input$forecast_file)
+    tryCatch(
+      read_forecast_xlsx(input$forecast_file$datapath),
+      error = function(e) {
+        validate(need(FALSE, paste("Ошибка чтения файла прогноза:", e$message)))
+      }
+    )
+  })
+
+  actual_growth_data <- reactive({
+    dt <- fetch_actual_growth(portfolio_holdings$ticker)
+    validate(need(nrow(dt) > 0, "Не удалось загрузить фактические котировки с Yahoo Finance"))
+    dt
+  })
+
+  portfolio_dashboard <- reactive({
+    tryCatch(
+      compute_dashboard(forecast_data(), actual_growth_data(), portfolio_holdings),
+      error = function(e) {
+        validate(need(FALSE, paste("Ошибка расчёта дашборда:", e$message)))
+      }
+    )
+  })
+
+  output$stat_actual_growth <- renderUI({
+    v <- portfolio_dashboard()$portfolio[date == max(date), actual_growth]
+    tags$h2(sprintf("%+.2f%%", v * 100))
+  })
+
+  output$stat_forecast_growth <- renderUI({
+    v <- portfolio_dashboard()$portfolio[date == max(date), forecast_growth]
+    tags$h2(sprintf("%+.2f%%", v * 100))
+  })
+
+  output$stat_deviation <- renderUI({
+    d <- portfolio_dashboard()$portfolio[date == max(date)]
+    tags$h2(sprintf("%+.2f", (d$actual_growth - d$forecast_growth) * 100))
+  })
+
+  output$stat_cum_error <- renderUI({
+    v <- portfolio_dashboard()$portfolio[date == max(date), cum_error]
+    tags$h2(sprintf("%.2f", v * 100))
+  })
+
+  output$portfolio_table <- renderRHandsontable({
+    dash <- portfolio_dashboard()
+
+    latest_ticker <- dash$by_ticker[date == max(date)]
+    tbl <- latest_ticker[, .(
+      `Компания` = company,
+      `Тикер` = ticker,
+      `Кол-во, шт` = quantity,
+      `Цена покупки, $` = round(purchase_price, 2),
+      `Текущая цена, $` = round(price, 2),
+      `Рост с 11.09, %` = round(actual_growth * 100, 2),
+      `Прогноз, %` = round(forecast_growth * 100, 2),
+      `Отклонение, п.п.` = round((actual_growth - forecast_growth) * 100, 2),
+      `Накоп. ошибка, п.п.` = round(cum_error * 100, 2)
+    )]
+
+    latest_portfolio <- dash$portfolio[date == max(date)]
+    tbl_total <- data.table(
+      `Компания` = "ПОРТФЕЛЬ", `Тикер` = "TOTAL",
+      `Кол-во, шт` = NA_real_, `Цена покупки, $` = NA_real_, `Текущая цена, $` = NA_real_,
+      `Рост с 11.09, %` = round(latest_portfolio$actual_growth * 100, 2),
+      `Прогноз, %` = round(latest_portfolio$forecast_growth * 100, 2),
+      `Отклонение, п.п.` = round((latest_portfolio$actual_growth - latest_portfolio$forecast_growth) * 100, 2),
+      `Накоп. ошибка, п.п.` = round(latest_portfolio$cum_error * 100, 2)
+    )
+
+    rhandsontable(rbind(tbl, tbl_total), readOnly = TRUE) %>%
+      hot_table(highlightCol = TRUE, highlightRow = TRUE)
+  })
+
+  output$portfolio_growth_chart <- renderPlotly({
+    dash <- portfolio_dashboard()
+    bt <- dash$by_ticker
+    pf <- copy(dash$portfolio)
+
+    plot_ly() %>%
+      add_lines(data = bt, x = ~date, y = ~(actual_growth * 100), color = ~company,
+                legendgroup = ~company, name = ~paste(company, "(факт)")) %>%
+      add_lines(data = bt, x = ~date, y = ~(forecast_growth * 100), color = ~company,
+                line = list(dash = "dot"), legendgroup = ~company, showlegend = FALSE) %>%
+      add_lines(data = pf, x = ~date, y = ~(actual_growth * 100), name = "Портфель (факт)",
+                line = list(color = "black", width = 3)) %>%
+      add_lines(data = pf, x = ~date, y = ~(forecast_growth * 100), name = "Портфель (прогноз)",
+                line = list(color = "black", width = 3, dash = "dot")) %>%
+      layout(title = "Темп роста: факт (сплошная) vs прогноз (пунктир)",
+             xaxis = list(title = "Дата"), yaxis = list(title = "Темп роста, %"),
+             font = list(family = "Panton"))
+  })
+
+  output$portfolio_error_chart <- renderPlotly({
+    dash <- portfolio_dashboard()
+    bt <- dash$by_ticker
+    pf <- copy(dash$portfolio)
+
+    plot_ly() %>%
+      add_lines(data = bt, x = ~date, y = ~(cum_error * 100), color = ~company) %>%
+      add_lines(data = pf, x = ~date, y = ~(cum_error * 100), name = "Портфель",
+                line = list(color = "black", width = 3)) %>%
+      layout(title = "Накопленная ошибка прогноза",
+             xaxis = list(title = "Дата"), yaxis = list(title = "Накопленная ошибка, п.п."),
+             font = list(family = "Panton"))
+  })
 })

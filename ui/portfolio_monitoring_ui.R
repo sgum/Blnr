@@ -1,11 +1,36 @@
 # portfolio_monitoring_ui.R
 
 portfolioMonitoringUI <- function() {
-  cat("Rendering portfolioMonitoringUI...\n")
-  result <- bs4TabItem(
+  bs4TabItem(
     tabName = "portfolio_monitoring",
-    h3("Мониторинг портфеля")
+    fluidRow(
+      column(12,
+        bs4Card(
+          title = "Файл прогноза", width = 12, collapsible = FALSE,
+          p("Загрузите файл с расчётными темпами роста акций портфеля (уровень на 11.09.2026, прогноз с 14.09.2026). ",
+            "Формат: столбец с датой + по столбцу на каждую акцию (GS, GE, AMD, GOOG, NVDA или название компании)."),
+          fileInput("forecast_file", label = NULL, accept = ".xlsx",
+                     buttonLabel = "Обзор...", placeholder = "Файл не выбран")
+        )
+      )
+    ),
+    fluidRow(
+      column(3, bs4Card(width = 12, title = "Факт. рост портфеля", status = "primary", htmlOutput("stat_actual_growth"))),
+      column(3, bs4Card(width = 12, title = "Прогноз роста портфеля", status = "info", htmlOutput("stat_forecast_growth"))),
+      column(3, bs4Card(width = 12, title = "Отклонение, п.п.", status = "warning", htmlOutput("stat_deviation"))),
+      column(3, bs4Card(width = 12, title = "Накопленная ошибка, п.п.", status = "danger", htmlOutput("stat_cum_error")))
+    ),
+    fluidRow(
+      column(12,
+        bs4Card(
+          title = "Портфель на последнюю дату", width = 12,
+          rHandsontableOutput("portfolio_table")
+        )
+      )
+    ),
+    fluidRow(
+      column(6, bs4Card(title = "Факт vs Прогноз, темп роста", width = 12, plotlyOutput("portfolio_growth_chart"))),
+      column(6, bs4Card(title = "Накопленная ошибка прогноза", width = 12, plotlyOutput("portfolio_error_chart")))
+    )
   )
-  cat("Finished rendering portfolioMonitoringUI...\n")
-  return(result)
 }

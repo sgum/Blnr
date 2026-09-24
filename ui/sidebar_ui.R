@@ -30,7 +30,8 @@ sidebarUI <- function() {
             column(12, actionButton("download_data", "", icon = icon("download"), title = "Скачать данные"))
           )
         ),
-        bs4SidebarMenuItem("Загрузка прогнозов", tabName = "tab2", icon = icon("upload"))
+        bs4SidebarMenuItem("Загрузка прогнозов", tabName = "tab2", icon = icon("upload")),
+        bs4SidebarMenuItem("Мониторинг портфеля", tabName = "portfolio_monitoring", icon = icon("chart-line"))
       )
     )
   )

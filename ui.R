@@ -7,6 +7,7 @@ source("global.R", local = TRUE)
 source("ui/sidebar_ui.R", local = TRUE)
 source("ui/download_history_ui.R", local = TRUE)
 source("ui/upload_forecasts_ui.R", local = TRUE)
+source("ui/portfolio_monitoring_ui.R", local = TRUE)
 
 shinyUI(
   bs4DashPage(
@@ -74,8 +75,9 @@ shinyUI(
         "))
       ),
       bs4TabItems(
-        downloadHistoryUI(),  # Вызов функции для вкладки "1. Котировка"
-        uploadForecastsUI()   # Вызов функции для вкладки "Загрузка прогнозов"
+        downloadHistoryUI(),      # Вызов функции для вкладки "1. Котировка"
+        uploadForecastsUI(),      # Вызов функции для вкладки "Загрузка прогнозов"
+        portfolioMonitoringUI()   # Вызов функции для вкладки "Мониторинг портфеля"
       )
     )
   )
