@@ -17,7 +17,8 @@
 
 suppressWarnings(suppressMessages({
   library(data.table)
-  library(quantmod)
+  library(httr)
+  library(jsonlite)
   library(openxlsx)
 }))
 
@@ -39,10 +40,14 @@ portfolio_holdings <- data.table::data.table(
   purchase_date = as.Date("2026-09-14")
 )
 
+# Порядок как в global.R: snapshots.R задаёт путь лога (от него каталог кэша),
+# watchlist.R — реестр инструментов, marketdata.R — источник котировок.
+source("R/snapshots.R")
+source("R/watchlist.R")
+source("R/marketdata.R")
 source("R/exante_api.R")
 source("R/portfolio.R")
 source("R/forecast.R")
-source("R/snapshots.R")
 
 log_line <- function(...) cat(sprintf("[snapshot %s] %s\n", format(Sys.time()), paste0(...)))
 

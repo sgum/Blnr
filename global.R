@@ -44,11 +44,16 @@ FORECAST_XLSX_PATH <- Sys.getenv(
   unset = path.expand("~/Downloads/quotes 2026-09-13 2.xlsx")
 )
 
-# Клиент Exante API и бизнес-логика вкладок "Портфель Exante" / "Загрузка прогнозов"
+# Порядок важен: snapshots.R задаёт SNAPSHOT_LOG_PATH (от него считается каталог
+# кэша в marketdata.R), watchlist.R — реестр инструментов, на который опираются
+# и marketdata.R (какие тикеры и через какой эндпоинт), и forecast.R (как связать
+# строку модели с тикером).
+source("R/snapshots.R")
+source("R/watchlist.R")
+source("R/marketdata.R")
 source("R/exante_api.R")
 source("R/portfolio.R")
 source("R/forecast.R")
-source("R/snapshots.R")
 source("R/auth_ad.R")
 
 # Модули интерфейса — в глобальной области, т.к. dashboardUI()/loginUI() строятся

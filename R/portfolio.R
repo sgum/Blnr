@@ -43,29 +43,20 @@ get_portfolio_positions <- function() {
   dt[, .(ticker, quantity, entry_price, current_price, source)]
 }
 
+# Источник котировок — marketdata.app (R/marketdata.R), НЕ Yahoo.
+# Yahoo с сервера приложений (Petr) отдаёт 401 на каждый запрос: «фактическая»
+# половина дашборда молча оказывалась пустой ($0 / −100%), при этом стенд
+# выглядел исправным. См. docs/dev.md.
+
 # Цена закрытия тикера на дату (или ближайший предыдущий торговый день) —
 # точка входа для расчёта роста.
 get_close_on_date <- function(ticker, date) {
-  data <- tryCatch(
-    quantmod::getSymbols(ticker, src = "yahoo",
-                          from = date - 7, to = date + 1,
-                          auto.assign = FALSE),
-    error = function(e) NULL
-  )
-  if (is.null(data) || nrow(data) == 0) return(NA_real_)
-  as.numeric(quantmod::Cl(data)[nrow(data)])
+  md_close_on_date(ticker, date)
 }
 
-# Последняя доступная цена закрытия тикера.
+# Последняя доступная цена тикера.
 get_last_close <- function(ticker) {
-  data <- tryCatch(
-    quantmod::getSymbols(ticker, src = "yahoo",
-                          from = Sys.Date() - 10, to = Sys.Date() + 1,
-                          auto.assign = FALSE),
-    error = function(e) NULL
-  )
-  if (is.null(data) || nrow(data) == 0) return(NA_real_)
-  as.numeric(quantmod::Cl(data)[nrow(data)])
+  md_last_price(ticker)
 }
 
 # Полная таблица метрик портфеля: количество, цена входа, текущая цена,

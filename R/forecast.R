@@ -11,7 +11,7 @@
 #   ...до строки, где столбец 1 пуст или равен "var" (начало блока дисперсий).
 # Инструменты записаны человекочитаемыми именами ("Goldman Sachs", "Nvidia",
 # "Google", "AMD", "General Electric", ...) — сопоставляются с тикерами по
-# FORECAST_TICKER_ALIASES.
+# реестру R/watchlist.R (поле name_model), точным совпадением.
 #
 # СМЫСЛ ЗНАЧЕНИЙ. .qMk — это УЖЕ НАКОПЛЕННЫЙ относительный прогноз роста
 # бумаги на горизонт k (в долях: 0.012 = +1.2%), а НЕ доходность за один шаг.
@@ -23,28 +23,20 @@
 # учитываются (приблизительная сетка); при необходимости уточните
 # forecast_step_dates().
 
-FORECAST_TICKER_ALIASES <- list(
-  GS   = c("gs", "goldman", "goldman sachs"),
-  GE   = c("ge", "general electric"),
-  AMD  = c("amd"),
-  GOOG = c("goog", "googl", "google", "alphabet"),
-  NVDA = c("nvda", "nvidia")
-)
+# Список известных инструментов больше не дублируется здесь — он один и тот же
+# для market-data, прогноза и таблицы портфеля и живёт в R/watchlist.R.
 
 # Сопоставляет имя инструмента с известным тикером (без учёта регистра,
 # по вхождению алиаса). NA, если сопоставить не удалось.
 match_ticker_column <- function(header) {
-  h <- tolower(trimws(as.character(header)))
-  for (tk in names(FORECAST_TICKER_ALIASES)) {
-    aliases <- FORECAST_TICKER_ALIASES[[tk]]
-    # Совпадение по ЦЕЛОМУ слову, а не по подстроке: иначе короткий алиас
-    # "ge" ловит "general motors" ("**ge**neral"), а "gs"/"amd" — случайные
-    # вхождения. \\b — граница слова.
-    hit <- h %in% aliases || any(vapply(aliases, function(a)
-      grepl(paste0("\\b", a, "\\b"), h), logical(1)))
-    if (hit) return(tk)
-  }
-  NA_character_
+  # Сопоставление идёт ТОЧНЫМ совпадением с реестром R/watchlist.R
+  # (поле name_model — подпись строки ровно как в Q_mean_var), а не поиском
+  # подстроки/алиасов. Алиасы уже давали ложные срабатывания: короткий "ge"
+  # ловил "General Motors", и строка модели уезжала не к тому тикеру.
+  # Реестр покрывает все 26 инструментов модели, старый список алиасов — 5.
+  tk <- ticker_by_model_name(header)
+  if (length(tk) == 0) return(NA_character_)
+  tk[1]
 }
 
 # Список листов в xlsx-файле (для UI-селектора).
@@ -129,8 +121,8 @@ parse_forecast_file <- function(path, sheet = NULL, as_fraction = TRUE,
   rows <- rows[!vapply(rows, is.null, logical(1))]
   if (length(rows) == 0) {
     stop(sprintf(
-      "Ни один инструмент блока 'mean' не сопоставлен с известными тикерами (%s).",
-      paste(names(FORECAST_TICKER_ALIASES), collapse = ", ")
+      "Ни один инструмент блока 'mean' не сопоставлен с реестром watchlist (%s).",
+      paste(WATCHLIST$ticker, collapse = ", ")
     ))
   }
 
