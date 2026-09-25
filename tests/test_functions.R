@@ -32,7 +32,8 @@ portfolio_holdings <- data.table(
   entry_price = c(995.72, 318.28), purchase_date = as.Date("2026-09-14")
 )
 
-source("R/snapshots.R"); source("R/watchlist.R"); source("R/marketdata.R")
+source("R/snapshots.R"); source("R/watchlist.R"); source("R/store.R")
+source("R/marketdata.R")
 source("R/exante_api.R"); source("R/portfolio.R"); source("R/forecast.R")
 source("R/auth_ad.R"); source("R/ui_kit.R")
 
@@ -55,8 +56,12 @@ fake <- data.table(
   volume = NA_real_
 )
 local({
-  md_candles <<- function(ticker, days = NULL, type = NULL) fake
-  on.exit(rm(md_candles, envir = .GlobalEnv), add = TRUE)
+  # Подменяем источник свечей — но ВОССТАНАВЛИВАЕМ, а не удаляем: rm() сносил
+  # настоящую md_candles из глобальной области, и следующие разделы падали на
+  # «could not find function». Прибор не должен ломать то, что измеряет.
+  real_md_candles <- md_candles
+  md_candles <<- function(ticker, days = NULL, type = NULL, online = FALSE) fake
+  on.exit(assign("md_candles", real_md_candles, envir = .GlobalEnv), add = TRUE)
   ok("close на 09.09 = 100",            identical(md_close_on_date("X", as.Date("2026-09-09")), 100))
   ok("close на 11.09 = 300 (не 400!)",  identical(md_close_on_date("X", as.Date("2026-09-11")), 300))
   ok("разные даты -> разные значения",
@@ -149,7 +154,91 @@ local({
   .MD_STATE$last_error <- NULL
 })
 
-cat("== 7. Сборка интерфейса ==\n")
+cat("== 7. Хранилище рядов ==\n")
+# Стенд обязан читать ряды из хранилища и НЕ ходить в интернет: лимит
+# marketdata.app — 100 запросов в сутки, а ползунок времени по всему реестру
+# это сотни обращений на одно открытие экрана.
+local({
+  tmpstore <- file.path(tempdir(), paste0("store_", as.integer(runif(1, 1e6, 9e6))))
+  old_dir <- BLNR_STORE_DIR
+  BLNR_STORE_DIR <<- tmpstore
+  on.exit({ BLNR_STORE_DIR <<- old_dir; unlink(tmpstore, recursive = TRUE) }, add = TRUE)
+
+  ok("пустое хранилище -> пустой ряд, а не ошибка", nrow(store_read_candles("GS")) == 0)
+  # Без хранилища и без разрешения на сеть стенд обязан СКАЗАТЬ причину,
+  # а не молча вернуть NA, из которого потом получится $0.
+  .MD_STATE$last_error <- NULL
+  c0 <- md_candles("GS", online = FALSE)
+  ok("без хранилища и без сети — пусто", nrow(c0) == 0)
+  ok("причина названа: хранилище пусто",
+     grepl("хранилищ", md_status_text() %||% ""))
+  .MD_STATE$last_error <- NULL
+
+  series <- data.table(
+    date = seq(as.Date("2026-09-01"), by = "day", length.out = 10),
+    open = 1, high = 2, low = 0.5,
+    close = as.numeric(seq(100, 109)), volume = NA_real_
+  )
+  store_write_candles("GS", series)
+  ok("ряд читается обратно целиком", nrow(store_read_candles("GS")) == 10)
+  ok("тикер виден в списке хранилища", "GS" %in% store_tickers())
+  # Ровно тот дефект, что уже ловили дважды: выборка по дате не должна
+  # возвращать последнюю строку независимо от аргумента.
+  ok("цена на дату берётся из хранилища",
+     isTRUE(all.equal(md_close_on_date("GS", as.Date("2026-09-03"), online = FALSE), 102)))
+  ok("разные даты -> разные цены",
+     md_close_on_date("GS", as.Date("2026-09-03"), online = FALSE) !=
+     md_close_on_date("GS", as.Date("2026-09-09"), online = FALSE))
+  ok("текущая цена = закрытие последней свечи",
+     isTRUE(all.equal(md_last_price("GS"), 109)))
+  ok("дата текущей цены — последняя сессия",
+     identical(md_last_price_date("GS"), as.Date("2026-09-10")))
+  ok("глубина ограничивается аргументом days", nrow(md_candles("GS", days = 3)) == 3)
+
+  # Откат должен быть копированием: повторно скачать нельзя, лимит конечен.
+  store_rotate()
+  vers <- list.dirs(file.path(BLNR_STORE_DIR, "versions"), recursive = FALSE)
+  ok("прежняя версия сохраняется до записи", length(vers) == 1)
+  ok("в снимке лежит копия ряда",
+     file.exists(file.path(vers[1], "GS.csv")))
+
+  store_write_meta(list(updated_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z"),
+                        instruments = 1, last_date = "2026-09-10"))
+  st <- store_status()
+  ok("состояние хранилища читается", isTRUE(st$ok) && st$instruments == 1)
+  ok("дата последнего ряда видна", identical(st$last_date, as.Date("2026-09-10")))
+
+  # Гейты качества загрузки. Каждый предъявлен входу, на котором обязан
+  # ответить «нет», и входу, на котором обязан промолчать.
+  good <- data.table(
+    date = seq(as.Date("2026-07-01"), by = "day", length.out = 80),
+    open = 1, high = 2, low = 0.5,
+    close = as.numeric(seq(200, 279)), volume = NA_real_
+  )
+  ok("исправный ряд претензий не вызывает",
+     length(store_verify_series(list(GS = good), today = as.Date("2026-09-19"))) == 0)
+  ok("короткий ряд отклоняется",
+     any(grepl("строк", store_verify_series(list(GS = good[1:10]),
+                                            today = as.Date("2026-07-11")))))
+  bad_na <- data.table::copy(good); bad_na[5, close := NA_real_]
+  ok("пустая цена закрытия отклоняется",
+     any(grepl("пустые цены", store_verify_series(list(GS = bad_na),
+                                                  today = as.Date("2026-09-19")))))
+  bad_dup <- data.table::copy(good); bad_dup[2, date := bad_dup$date[1]]
+  ok("дубли дат отклоняются",
+     any(grepl("возрастают", store_verify_series(list(GS = bad_dup),
+                                                 today = as.Date("2026-09-19")))))
+  # Самый коварный: файл целый, данные правдоподобные, но ряд заморожен —
+  # витрина показала бы прошлое как настоящее.
+  ok("замороженный ряд отклоняется",
+     any(grepl("дней назад", store_verify_series(list(GS = good),
+                                                 today = as.Date("2026-12-01")))))
+  ok("пустой ряд отклоняется",
+     any(grepl("пустой", store_verify_series(list(GS = empty_candles()),
+                                             today = as.Date("2026-09-19")))))
+})
+
+cat("== 8. Сборка интерфейса ==\n")
 # Гейт против класса дефектов «экран не собрался», который до выкладки ничем
 # не виден: перекрытые имена функций (jsonlite::validate поверх shiny::validate,
 # httr::config поверх plotly::config), пакет, нужный при СБОРКЕ UI, но

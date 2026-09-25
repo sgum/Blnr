@@ -230,10 +230,28 @@ shinyServer(function(input, output, session) {
     }
     d <- suppressWarnings(max(vapply(m$ticker, function(tk)
       as.numeric(md_last_price_date(tk)), numeric(1)), na.rm = TRUE))
-    tags$span(class = "bdg", "Котировки на ",
-              tags$b(if (is.finite(d)) format(as.Date(d, origin = "1970-01-01"), "%d.%m")
-                     else "—"),
-              " (закрытие)")
+    if (!is.finite(d)) {
+      return(tags$span(class = "bdg warn", "Котировки: ", tags$b("нет данных")))
+    }
+    last <- as.Date(d, origin = "1970-01-01")
+    stale <- as.integer(Sys.Date() - last)
+    st <- store_status()
+    tip <- paste0(
+      "Цены — закрытие последней дневной сессии из локального хранилища рядов. ",
+      "Обновляет его ночное задание Jenkins; стенд в marketdata.app не ходит, ",
+      "потому что у аккаунта лимит 100 запросов в сутки. ",
+      if (!is.null(st$updated_at))
+        paste0("Последняя загрузка: ", format(st$updated_at, "%d.%m %H:%M"), ". ") else "",
+      "Инструментов в хранилище: ", st$instruments, ".")
+    # Замороженный ряд неотличим от живого: файлы на месте, числа
+    # правдоподобные, просто даты кончились. Поэтому возраст выводится явно.
+    if (stale > 5L) {
+      return(tags$span(class = "bdg warn", title = tip,
+                       "Ряды устарели: ", tags$b(format(last, "%d.%m")),
+                       sprintf(" (%d дн. назад)", stale)))
+    }
+    tags$span(class = "bdg", title = tip, "Котировки на ",
+              tags$b(format(last, "%d.%m")), " (закрытие)")
   })
 
   # KPI ####

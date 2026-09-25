@@ -45,6 +45,7 @@ FORECAST_XLSX_PATH <- Sys.getenv(
 # строку модели с тикером).
 source("R/snapshots.R")
 source("R/watchlist.R")
+source("R/store.R")
 source("R/marketdata.R")
 source("R/exante_api.R")
 source("R/portfolio.R")

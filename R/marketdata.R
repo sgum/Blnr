@@ -107,6 +107,9 @@ md_last_error <- function() .MD_STATE$last_error
 md_status_text <- function() {
   e <- md_last_error()
   if (is.null(e)) return(NULL)
+  if (identical(e$code, "marketdata_store_empty")) {
+    return("хранилище рядов пусто — ночная загрузка ещё не отработала")
+  }
   if (identical(e$code, "marketdata_no_token")) return("не задан MARKETDATA_TOKEN")
   if (identical(e$status, 429L) || identical(e$status, 429) ||
       (!is.na(e$message) && grepl("credit limit", e$message, ignore.case = TRUE))) {
@@ -148,8 +151,24 @@ md_last_prices <- function(tickers) {
 # назад от последней сессии, не требуя календарной арифметики и не промахиваясь
 # на выходных/праздниках).
 # Возвращает data.table(date, open, high, low, close, volume) или пустую.
+# В интернет ходит ТОЛЬКО загрузчик (scripts/fetch_marketdata.R), который
+# запускается заданием Jenkins раз в сутки. Стенд читает хранилище и при
+# пустом хранилище честно говорит «нет данных», а не выжигает лимит запросов
+# на каждом открытии экрана.
+md_online_allowed <- function() {
+  identical(toupper(Sys.getenv("BLNR_ALLOW_ONLINE", unset = "false")), "TRUE")
+}
+
 md_candles <- function(ticker, days = WATCHLIST_RETRO_DAYS,
-                       type = instrument_type(ticker)) {
+                       type = instrument_type(ticker),
+                       online = md_online_allowed()) {
+  st <- store_read_candles(ticker)
+  if (nrow(st) > 0) return(utils::tail(st, days))
+  if (!online) {
+    md_note_error(list(error = "marketdata_store_empty"))
+    return(empty_candles())
+  }
+
   key <- paste0("c_", type, "_", ticker, "_", days, "_", format(Sys.Date()))
   hit <- .md_cache_get(key, ttl_sec = .md_ttl_today())
   if (!is.null(hit)) return(hit)
@@ -157,10 +176,7 @@ md_candles <- function(ticker, days = WATCHLIST_RETRO_DAYS,
   seg <- if (identical(type, "index")) "indices" else "stocks"
   res <- md_get(sprintf("/%s/candles/D/%s/", seg, ticker),
                 query = list(countback = days))
-  empty <- data.table::data.table(
-    date = as.Date(character()), open = numeric(), high = numeric(),
-    low = numeric(), close = numeric(), volume = numeric()
-  )
+  empty <- empty_candles()
   if (!is.null(res$error)) {
     md_note_error(res)
     message(sprintf("[MD] WARN свечи %s: %s (%s)", ticker, res$error,
@@ -191,8 +207,9 @@ md_candles <- function(ticker, days = WATCHLIST_RETRO_DAYS,
 # «рост от базы» тогда сравнивает текущую цену с самой собой и даёт ~0.
 # Ровно эти грабли уже были в forecast_for_date(), см. docs/dev.md.
 md_close_on_date <- function(ticker, on_date, days = WATCHLIST_RETRO_DAYS,
-                             type = instrument_type(ticker)) {
-  cnd <- md_candles(ticker, days = days, type = type)
+                             type = instrument_type(ticker),
+                             online = md_online_allowed()) {
+  cnd <- md_candles(ticker, days = days, type = type, online = online)
   if (nrow(cnd) == 0) return(NA_real_)
   target <- as.Date(on_date)
   sub <- cnd[date <= target]
