@@ -215,9 +215,10 @@ portfolio_value_series <- function(ledger, sessions, currency = "USD") {
   idx <- findInterval(sessions, cash_tx$value_date)
   cash <- ifelse(idx == 0, 0, cash_tx$cum[pmax(idx, 1)])
 
-  # Стоимость бумаг: по каждой бумаге количество на сессию * цена закрытия.
   ev <- ledger_events(ledger, currency)
   securities <- rep(0, length(sessions))
+  unpriced <- character()
+
   for (sym in unique(ev$symbol)) {
     e <- ev[symbol == sym]
     data.table::setorder(e, value_date)
@@ -225,20 +226,75 @@ portfolio_value_series <- function(ledger, sessions, currency = "USD") {
     e[, cum := cumsum(qty)]
     j <- findInterval(sessions, e$value_date)
     qty <- ifelse(j == 0, 0, e$cum[pmax(j, 1)])
-    if (all(abs(qty) < 1e-9)) next
+    held <- abs(qty) > 1e-9
+    if (!any(held)) next
 
     cnd <- md_candles(exante_symbol_to_ticker(sym), days = length(sessions) + 400)
-    if (nrow(cnd) == 0) next
+    if (nrow(cnd) == 0) {
+      # Инструмент держался, а цены на него нет (так со всеми опционами: на
+      # текущем тарифе их ряды не тянутся). Молча пропустить его — значит
+      # ЗАНИЗИТЬ стоимость бумаг и нарисовать правдоподобную неправду.
+      # Поэтому такие сессии становятся NA: на графике будет разрыв, а не
+      # гладкая заниженная линия.
+      securities[held] <- NA_real_
+      unpriced <- c(unpriced, sym)
+      next
+    }
     k <- findInterval(sessions, cnd$date)
     px <- ifelse(k == 0, NA_real_, cnd$close[pmax(k, 1)])
-    contrib <- qty * px
-    # Нет цены — нет и слагаемого: подставлять ноль значит занижать портфель
-    # молча. Такие сессии станут NA в итоге, и на графике будет разрыв.
-    securities <- securities + ifelse(abs(qty) < 1e-9, 0, contrib)
+    securities <- securities + ifelse(held, qty * px, 0)
   }
 
-  data.table::data.table(
+  out <- data.table::data.table(
     date = sessions, securities = securities, cash = cash,
     total = securities + cash
   )
+  # Какие инструменты не удалось оценить — на экран, а не в лог.
+  data.table::setattr(out, "unpriced", unique(unpriced))
+  out[]
+}
+
+# Невязка портфеля по сессиям: фактический результат от цен входа против того,
+# что обещала модель за тот же период владения.
+#
+# Считается из реестра операций и прогноза, а НЕ из ежедневных снимков стенда.
+# Снимки начинались со дня первого запуска и накапливались по одной точке в
+# сутки — на экране это давало две точки и подпись «динамика появится со
+# второго снимка», то есть виджет, который нечего показать. Реестр знает всю
+# историю сразу.
+#
+# На каждую сессию берём позиции, открытые к этому моменту, и сравниваем:
+#   факт   = стоимость по ценам сессии / стоимость по ценам входа
+#   модель = прогноз, приведённый к дате входа каждой позиции
+# Сессии, где хотя бы одну открытую бумагу нельзя оценить, дают NA — разрыв
+# на графике вместо тихо заниженной линии.
+portfolio_deviation_series <- function(ledger, forecast, sessions) {
+  empty <- data.table::data.table(
+    date = as.Date(character()), fact_pct = numeric(),
+    model_pct = numeric(), dev_pp = numeric()
+  )
+  if (nrow(ledger) == 0 || length(sessions) == 0) return(empty)
+  if (is.null(forecast) || nrow(forecast) == 0) return(empty)
+  sessions <- sort(as.Date(sessions))
+
+  rows <- lapply(sessions, function(d) {
+    pos <- ledger_positions_at(ledger, d)[quantity > 0]
+    if (nrow(pos) == 0) return(NULL)
+    px <- vapply(pos$ticker, function(tk) md_close_on_date(tk, d), numeric(1))
+    mdl <- vapply(seq_len(nrow(pos)), function(i) {
+      forecast_between(forecast, pos$ticker[i],
+                       if (is.na(pos$opened_date[i])) FORECAST_BASELINE_DATE
+                       else pos$opened_date[i], d)
+    }, numeric(1))
+    entry <- sum(pos$cost)
+    if (!is.finite(entry) || entry <= 0) return(NULL)
+    fact  <- sum(pos$quantity * px)
+    model <- sum(pos$cost * (1 + mdl / 100))
+    f <- (fact / entry - 1) * 100
+    m <- (model / entry - 1) * 100
+    data.table::data.table(date = d, fact_pct = f, model_pct = m, dev_pp = f - m)
+  })
+  rows <- rows[!vapply(rows, is.null, logical(1))]
+  if (length(rows) == 0) return(empty)
+  data.table::rbindlist(rows)
 }

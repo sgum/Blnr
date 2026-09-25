@@ -441,7 +441,86 @@ local({
      s0$positions == 0 && isTRUE(all.equal(s0$cash, 10000)))
 })
 
-cat("== 10. Выгрузка в типовом формате мониторинга ==\n")
+cat("== 10. Сравнение с моделью за период владения ==\n")
+# Прогноз накоплен от базовой даты файла. Позиция, купленная ПОЗЖЕ базы, при
+# сравнении «от базы» присваивает себе движение цены за время, когда её не
+# было: на боевом счёте это давало «обгоняем модель на 7.71 пп» при
+# фактическом результате +0.79%.
+local({
+  fc <- data.table(
+    date = as.Date(c("2026-09-11", "2026-09-18", "2026-09-25")),
+    ticker = "GS", forecast_growth_pct = c(0, 10, 21)
+  )
+  ok("рост от базы берётся как есть",
+     isTRUE(all.equal(forecast_between(fc, "GS", as.Date("2026-09-11"), as.Date("2026-09-25")), 21)))
+  # Куплено 18.09, когда модель уже обещала +10%. К 25.09 обещано +21% от базы,
+  # значит за период владения — (1.21/1.10 - 1) = 10%, а не 21%.
+  ok("вход позже базы -> прогноз приводится к дате входа",
+     isTRUE(all.equal(forecast_between(fc, "GS", as.Date("2026-09-18"), as.Date("2026-09-25")), 10)))
+  ok("вход раньше базы -> считаем от базы",
+     isTRUE(all.equal(forecast_between(fc, "GS", as.Date("2026-01-01"), as.Date("2026-09-25")), 21)))
+  ok("неизвестный тикер -> NA",
+     is.na(forecast_between(fc, "ZZZ", as.Date("2026-09-18"), as.Date("2026-09-25"))))
+
+  m <- data.table(
+    ticker = c("GS", "GS"), growth_pct = c(12, 12),
+    growth_from_base_pct = c(23, 23),
+    purchase_date = as.Date(c("2026-09-18", "2026-09-11"))
+  )
+  r <- add_forecast_to_metrics(m, fc, as_of = as.Date("2026-09-25"))
+  ok("купленная позже сравнивается с приведённым прогнозом",
+     isTRUE(all.equal(r[1, forecast_since_entry_pct], 10)) &&
+     isTRUE(all.equal(r[1, dev_since_entry_pp], 2)))
+  ok("купленная с базы сравнивается с полным прогнозом",
+     isTRUE(all.equal(r[2, forecast_since_entry_pct], 21)))
+  # Ровно тот артефакт, ради которого всё затевалось.
+  ok("сравнение от базы и за период владения дают РАЗНОЕ",
+     r[1, dev_pct] != r[1, dev_since_entry_pp])
+})
+
+cat("== 11. Динамика счёта не занижается молча ==\n")
+# Инструмент, который держался, но цены на него нет (все опционы на текущем
+# тарифе), раньше просто пропускался — стоимость бумаг занижалась, а линия
+# оставалась гладкой и правдоподобной.
+local({
+  tmpstore <- file.path(tempdir(), paste0("vs_", as.integer(runif(1, 1e6, 9e6))))
+  old_dir <- BLNR_STORE_DIR; BLNR_STORE_DIR <<- tmpstore
+  on.exit({ BLNR_STORE_DIR <<- old_dir; unlink(tmpstore, recursive = TRUE) }, add = TRUE)
+  sess <- seq(as.Date("2026-03-02"), by = "day", length.out = 10)
+  store_write_candles("AMD", data.table(
+    date = sess, open = 1, high = 2, low = 0.5,
+    close = rep(100, 10), volume = NA_real_))
+
+  leg <- function(i, d, type, sym, asset, amount, price = NA_real_, ord = "") {
+    data.table(id = i, value_date = as.Date(d), type = type, symbol = sym,
+               asset = asset, amount = amount, price = price, order_id = ord)
+  }
+  base <- list(
+    leg(1, "2026-03-01", "FUNDING/WITHDRAWAL", "", "USD", 10000),
+    leg(2, "2026-03-03", "TRADE", "AMD.NASDAQ", "AMD.NASDAQ", 10, 100, "a1"),
+    leg(3, "2026-03-03", "TRADE", "AMD.NASDAQ", "USD", -1000, NA, "a1")
+  )
+  v1 <- portfolio_value_series(rbindlist(base), sess)
+  ok("акция с ценой считается", isTRUE(all.equal(v1[date == as.Date("2026-03-05"), securities], 1000)))
+  ok("до покупки бумаг ноль", isTRUE(all.equal(v1[date == as.Date("2026-03-02"), securities], 0)))
+
+  # Добавляем ОПЦИОН, которого нет в хранилище цен.
+  withopt <- rbindlist(c(base, list(
+    leg(4, "2026-03-05", "TRADE", "AMD.CBOE.20G2026.C220", "AMD.CBOE.20G2026.C220", 2, 30, "o1"),
+    leg(5, "2026-03-05", "TRADE", "AMD.CBOE.20G2026.C220", "USD", -6000, NA, "o1")
+  )))
+  v2 <- portfolio_value_series(withopt, sess)
+  ok("неоценимый инструмент даёт NA, а не тихий ноль",
+     is.na(v2[date == as.Date("2026-03-06"), securities]))
+  ok("итог на такой сессии тоже NA",
+     is.na(v2[date == as.Date("2026-03-06"), total]))
+  ok("до его покупки сессии остаются посчитанными",
+     isTRUE(all.equal(v2[date == as.Date("2026-03-04"), securities], 1000)))
+  ok("список неоценимых инструментов возвращается",
+     identical(attr(v2, "unpriced"), "AMD.CBOE.20G2026.C220"))
+})
+
+cat("== 12. Выгрузка в типовом формате мониторинга ==\n")
 # Формат разобран по эталону владельца («OptionActual <дата>.xlsx»). Проверка
 # держит его строение: если лист «Реестр» переедет или у листа инструмента
 # сдвинется блок данных, файл перестанет открываться рабочими формулами —
@@ -502,7 +581,7 @@ local({
      any(grepl("нет данных", as.character(unlist(reg2)))))
 })
 
-cat("== 11. Сборка интерфейса ==\n")
+cat("== 13. Сборка интерфейса ==\n")
 # Гейт против класса дефектов «экран не собрался», который до выкладки ничем
 # не виден: перекрытые имена функций (jsonlite::validate поверх shiny::validate,
 # httr::config поверх plotly::config), пакет, нужный при СБОРКЕ UI, но

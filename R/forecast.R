@@ -150,9 +150,50 @@ add_forecast_to_metrics <- function(dt, forecast, as_of = Sys.Date()) {
   if (is.null(forecast) || nrow(forecast) == 0) {
     dt[, forecast_pct := NA_real_]
     dt[, dev_pct := NA_real_]
+    dt[, forecast_since_entry_pct := NA_real_]
+    dt[, dev_since_entry_pp := NA_real_]
     return(dt[])
   }
   dt[, forecast_pct := vapply(ticker, forecast_for_date, numeric(1), forecast = forecast, date = as_of)]
   dt[, dev_pct := growth_from_base_pct - forecast_pct]
+
+  # Сравнение ЗА ПЕРИОД ВЛАДЕНИЯ — основное на экране. «От базы прогноза»
+  # остаётся как характеристика бумаги, но портфель по нему судить нельзя:
+  # позиция, купленная позже базы, присвоила бы себе чужой рост.
+  if ("purchase_date" %in% names(dt)) {
+    dt[, forecast_since_entry_pct := mapply(
+      function(tk, d) forecast_between(forecast, tk,
+                                       if (is.na(d)) FORECAST_BASELINE_DATE else d,
+                                       as_of),
+      ticker, purchase_date)]
+    dt[, dev_since_entry_pp := growth_pct - forecast_since_entry_pct]
+  } else {
+    dt[, forecast_since_entry_pct := NA_real_]
+    dt[, dev_since_entry_pp := NA_real_]
+  }
   dt[]
+}
+
+# Прогнозный рост ЗА ПЕРИОД владения: от даты входа до даты наблюдения.
+#
+# Зачем это нужно. Прогноз хранится как накопленный процент от базовой даты
+# файла (11.09.2026). Сравнивать с ним факт можно только если бумага была в
+# портфеле с той же базы. На деле шесть позиций из семи открыты 24.09, и
+# сравнение «от 11.09» приписывало портфелю движение цены за время, когда
+# бумаг ещё не было: витрина показывала «обгоняем модель на 7.71 пп» при
+# фактическом результате +0.79%.
+#
+# Приведение к дате входа: если модель обещала к моменту T0 рост f0, а к
+# моменту T рост f1 (оба от общей базы), то ожидаемый рост за период владения
+#   (1 + f1/100) / (1 + f0/100) - 1
+# Вход раньше базы прогноза — период считается от базы: раньше неё модели
+# просто нет, и делать вид, что есть, нельзя.
+forecast_between <- function(forecast, tkr, from, to) {
+  if (is.null(forecast) || nrow(forecast) == 0) return(NA_real_)
+  start <- max(as.Date(from), FORECAST_BASELINE_DATE, na.rm = TRUE)
+  f1 <- forecast_for_date(forecast, tkr, to)
+  if (is.na(f1)) return(NA_real_)
+  f0 <- if (start <= FORECAST_BASELINE_DATE) 0 else forecast_for_date(forecast, tkr, start)
+  if (is.na(f0)) f0 <- 0
+  ((1 + f1 / 100) / (1 + f0 / 100) - 1) * 100
 }

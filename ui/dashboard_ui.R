@@ -68,6 +68,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
   font-weight:700;color:var(--dim);cursor:pointer;white-space:nowrap}
 .seg button+button{border-left:1px solid var(--border)}
 .seg button:hover{background:var(--orange);color:var(--on-orange)}
+.seg button.on{background:var(--orange);color:var(--on-orange)}
+.seg.sm button{padding:3px 7px;font-size:11px}
 .hdr a{color:var(--dim);text-decoration:none;font-size:12px;font-weight:700;
   white-space:nowrap}
 .hdr a:hover{color:var(--orange-dk)}
@@ -88,24 +90,35 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
 .tl-ev i.buy{background:var(--ok)}
 .tl-ev i.sell{background:var(--bad)}
 .tl .val{font-weight:800;font-size:14px;white-space:nowrap;flex:none}
+.btn-today{flex:none;height:26px;padding:0 10px;border:1px solid var(--border);
+  background:var(--surface);border-radius:6px;font-size:11.5px;font-weight:700;
+  color:var(--dim);cursor:pointer;white-space:nowrap}
+.btn-today:hover{background:var(--orange);color:var(--on-orange);
+  border-color:var(--orange)}
+/* Будущая часть шкалы — та, что правее фактической даты: заливка дорожки там
+   гасится, чтобы прогноз не читался как уже случившийся факт. */
+.blnr .tl .irs-bar{background:var(--orange)}
+.tl-future{position:absolute;top:16px;height:6px;border-radius:0 3px 3px 0;
+  background:repeating-linear-gradient(90deg,var(--faint) 0 3px,transparent 3px 6px);
+  opacity:.5;z-index:3;pointer-events:none}
 /* ionRangeSlider: прижимаем по высоте и красим в фирменный оранжевый.
    Селекторы БЕЗ имени скина (.irs--flat / .irs--shiny): скин задаётся
    настройкой shinyWidgets и меняется, а классы .irs-bar / .irs-handle
    одинаковы во всех. Привязка к скину давала синюю полосу, которой нет в
    палитре. */
-.tl .irs{height:36px;font-family:var(--font)}
-.tl .irs-line{top:16px;height:6px;background:var(--grid);border:0;
+.blnr .tl .irs{height:36px;font-family:var(--font)}
+.blnr .tl .irs-line{top:16px;height:6px;background:var(--grid);border:0;
   border-radius:3px}
-.tl .irs-bar{top:16px;height:6px;background:var(--orange);border:0;
+.blnr .tl .irs-bar{top:16px;height:6px;background:var(--orange);border:0;
   border-radius:3px}
-.tl .irs-handle{top:9px;width:20px;height:20px}
-.tl .irs-handle>i:first-child,.tl .irs-handle.single{background:var(--orange-dk)}
-.tl .irs-single{background:var(--orange-dk);color:#fff;font-size:10.5px;
+.blnr .tl .irs-handle{top:9px;width:20px;height:20px}
+.blnr .tl .irs-handle>i:first-child,.blnr .tl .irs-handle.single{background:var(--orange-dk)}
+.blnr .tl .irs-single{background:var(--orange-dk);color:#fff;font-size:10.5px;
   font-weight:700;top:0;border-radius:4px}
-.tl .irs-single:before{border-top-color:var(--orange-dk)}
-.tl .irs-min,.tl .irs-max{background:transparent;color:var(--faint);
+.blnr .tl .irs-single:before{border-top-color:var(--orange-dk)}
+.blnr .tl .irs-min,.blnr .tl .irs-max{background:transparent;color:var(--faint);
   font-size:10px;top:2px}
-.tl .irs-grid{display:none}
+.blnr .tl .irs-grid{display:none}
 .tl .form-group{margin:0}
 
 /* --- KPI --------------------------------------------------------------- */
@@ -221,38 +234,58 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
 
 # Полоса времени. Правый край шкалы — фактическая дата (последняя сессия в
 # хранилище), слева от неё ретроспектива на BLNR_TIMELINE_DAYS сессий.
-timelineUI <- function() {
-  sessions <- store_sessions_window(BLNR_TIMELINE_DAYS)
-  if (length(sessions) == 0) {
+timelineUI <- function(forecast_dates = NULL) {
+  past <- store_sessions_window(BLNR_TIMELINE_DAYS)
+  if (length(past) == 0) {
     # Хранилище пусто — ползунку не из чего строить ось. Рисовать пустой
     # виджет незачем: о причине уже сказано плашкой в шапке.
     return(NULL)
   }
-  labels <- format(sessions, "%d.%m.%Y")
+  # Будущее берём из горизонта модели: дальше последней сессии показывать
+  # можно только то, что прогноз обещает, и ровно до той даты, до которой он
+  # есть. Выдумывать шкалу за пределами прогноза нельзя — там нет ничего.
+  future <- if (length(forecast_dates)) {
+    fd <- sort(unique(as.Date(forecast_dates)))
+    utils::head(fd[fd > max(past)], BLNR_FUTURE_DAYS)
+  } else as.Date(character())
+
+  all_dates <- c(past, future)
+  labels <- format(all_dates, "%d.%m.%Y")
+  fact <- format(max(past), "%d.%m.%Y")
+
   tags$div(
     class = "tl",
     tags$span(class = "lab", "Дата",
               info_tip(paste0(
-                "Портфель и сравнение с моделью показаны на выбранную ",
-                "торговую сессию. Шкала — ", length(sessions), " последних ",
-                "сессий из локального хранилища рядов; правый край — ",
-                "фактическая дата (", utils::tail(labels, 1), "). ",
-                "Выходных и праздников на шкале нет: в эти дни цены не ",
-                "существует, и показывать портфель было бы не из чего. ",
+                "Портфель и сравнение с моделью показаны на выбранную дату. ",
+                "Слева от отметки «факт» — ", length(past), " торговых сессий ",
+                "из локального хранилища; выходных и праздников на шкале нет, ",
+                "в эти дни цены не существует. ",
+                if (length(future))
+                  paste0("Справа от неё — ", length(future), " дат прогноза до ",
+                         format(max(future), "%d.%m.%Y"),
+                         ": там нет факта, показана только траектория модели. ")
+                else "",
                 "Позиция, купленная позже выбранной даты, в расчёт не ",
                 "попадает — портфеля на тот момент ещё не было. ",
-                "Точками на шкале отмечены сделки по счёту: зелёная — ",
-                "покупка, красная — продажа; наведите на точку, чтобы ",
-                "увидеть бумагу и объём."))),
+                "Точками отмечены сделки: зелёная — покупка, красная — ",
+                "продажа."))),
     tags$div(class = "sld",
              # Слой точек лежит НАД дорожкой: события счёта видно прямо на
              # шкале, без отдельного виджета и без текста на экране.
              tags$div(class = "tl-ev", uiOutput("tl_events", inline = TRUE)),
+             # Заштрихованная зона правее фактической даты: там факта нет,
+             # только траектория модели.
+             if (length(future))
+               tags$div(class = "tl-future",
+                        style = sprintf("left:%.4f%%;right:0",
+                                        (length(past) - 1) / (length(all_dates) - 1) * 100)),
              shinyWidgets::sliderTextInput(
-               "as_of", label = NULL, choices = labels,
-               selected = utils::tail(labels, 1),
+               "as_of", label = NULL, choices = labels, selected = fact,
                grid = FALSE, force_edges = TRUE, width = "100%"
              )),
+    actionButton("as_of_today", "Сегодня", class = "btn-today",
+                 title = paste("Вернуть ползунок на фактическую дату —", fact)),
     uiOutput("tl_marker", inline = TRUE)
   )
 }
@@ -284,7 +317,7 @@ dashboardUI <- function() {
       # Ось строится по РЕАЛЬНЫМ торговым сессиям из хранилища, а не по
       # календарю: на календарной шкале половина делений — выходные, где цены
       # нет и портфель показать не из чего.
-      timelineUI(),
+      uiOutput("timeline"),
 
       # --- KPI -----------------------------------------------------------
       uiOutput("kpi_strip", class = "kpis"),

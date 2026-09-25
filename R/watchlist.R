@@ -61,6 +61,11 @@ BLNR_TIMELINE_DAYS <- as.integer(Sys.getenv("BLNR_TIMELINE_DAYS", unset = "150")
 BLNR_FORECAST_HORIZON_DAYS <- as.integer(
   Sys.getenv("BLNR_FORECAST_HORIZON_DAYS", unset = "45"))
 
+# Сколько дат прогноза показывать ПРАВЕЕ фактической даты на шкале времени.
+# Горизонт модели — до 2028 года; вся она на шкале сделала бы прошлое
+# нечитаемым, а ради него шкала и нужна.
+BLNR_FUTURE_DAYS <- as.integer(Sys.getenv("BLNR_FUTURE_DAYS", unset = "60"))
+
 # Какие тикеры показывать и грузить. По умолчанию весь реестр; переменной
 # BLNR_WATCHLIST можно сузить ("GS,GE,AMD,GOOG,NVDA").
 watchlist_active <- function() {
