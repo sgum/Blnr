@@ -53,8 +53,16 @@ if (!md_has_token()) {
   quit(status = 1L)
 }
 
-wl <- watchlist_active()
-say("Реестр наблюдения: %d инструментов, глубина %d дней.", nrow(wl), BLNR_STORE_DAYS)
+wl   <- watchlist_active()
+skip <- watchlist_unavailable()
+say("Реестр наблюдения: %d инструментов к загрузке, глубина %d дней.",
+    nrow(wl), BLNR_STORE_DAYS)
+if (nrow(skip) > 0) {
+  # Осознанный пропуск, а не тихое умолчание: инструмент есть в реестре, но
+  # источник его на нашем тарифе не отдаёт (см. поле available в watchlist.R).
+  say("Пропускаем (источник не отдаёт на текущем тарифе): %s.",
+      paste(skip$ticker, collapse = ", "))
+}
 say("Хранилище: %s", normalizePath(BLNR_STORE_DIR, mustWork = FALSE))
 
 # (1) Прежняя версия — ДО записи.

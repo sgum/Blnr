@@ -95,6 +95,14 @@ ok("тикеры уникальны",          !any(duplicated(WATCHLIST$ticker)
 ok("имена модели уникальны",    !any(duplicated(tolower(trimws(WATCHLIST$name_model)))))
 ok("индексы идут отдельным эндпоинтом",
    identical(sort(WATCHLIST[type == "index", ticker]), c("DJI", "IXIC", "SPX")))
+# Источник на нашем тарифе индексы не отдаёт (404 no_data по всем, включая
+# VIX). Они остаются в реестре, но помечены недоступными, иначе ночная
+# загрузка падает на том, чего в принципе не получит.
+ok("недоступные инструменты помечены",
+   identical(sort(watchlist_unavailable()$ticker), c("DJI", "IXIC", "SPX")))
+ok("к загрузке идут только доступные",
+   !any(c("SPX", "DJI", "IXIC") %in% watchlist_active()$ticker))
+ok("реестр целиком доступен явным запросом", nrow(watchlist_active(all = TRUE)) == 26)
 
 cat("== 4. Снимки истории: идемпотентность по дате ==\n")
 tmp <- tempfile(fileext = ".csv")

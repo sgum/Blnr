@@ -31,7 +31,16 @@ WATCHLIST <- data.table::data.table(
               "Золото (ETF GLD)", "Нефть WTI (ETF USO)", "S&P 500",
               "Dow Jones 30", "Nasdaq Composite"),
   # stock — /v1/stocks/... (сюда же ETF GLD/USO); index — /v1/indices/...
-  type = c(rep("stock", 23), rep("index", 3))
+  type = c(rep("stock", 23), rep("index", 3)),
+  # Отдаёт ли источник этот ряд на нашем тарифе. Проверено 25.09.2026: по
+  # ВСЕМ индексам эндпоинт /v1/indices/ отвечает 404 {"s":"no_data"} — включая
+  # VIX, то есть дело не в написании тикера, а в том, что индексные данные в
+  # тариф не входят. Инструмент остаётся в реестре (он есть в модельном
+  # воркбуке и в таблице мониторинга), но ночная загрузка его пропускает
+  # осознанно и говорит об этом, а не падает на том, чего источник не отдаёт.
+  # Снять пометку, когда подключим индексные данные либо заменим их на ETF
+  # (SPY / DIA / QQQ — так же, как золото и нефть уже идут через GLD и USO).
+  available = c(rep(TRUE, 23), rep(FALSE, 3))
 )
 
 # Глубина ретроспективы по умолчанию — 120 торговых дней: столько же берёт
@@ -39,14 +48,19 @@ WATCHLIST <- data.table::data.table(
 # на одном окне.
 WATCHLIST_RETRO_DAYS <- as.integer(Sys.getenv("BLNR_RETRO_DAYS", unset = "120"))
 
-# Какие тикеры показывать на экране. По умолчанию — весь реестр; переменной
-# BLNR_WATCHLIST можно сузить ("GS,GE,AMD,GOOG,NVDA").
-watchlist_active <- function() {
+# Какие тикеры показывать и грузить. По умолчанию — те, что источник реально
+# отдаёт; переменной BLNR_WATCHLIST можно сузить ("GS,GE,AMD,GOOG,NVDA").
+# all = TRUE возвращает реестр целиком, вместе с недоступными.
+watchlist_active <- function(all = FALSE) {
+  base <- if (isTRUE(all)) WATCHLIST else WATCHLIST[available == TRUE]
   raw <- Sys.getenv("BLNR_WATCHLIST", unset = "")
-  if (!nzchar(raw)) return(data.table::copy(WATCHLIST))
+  if (!nzchar(raw)) return(data.table::copy(base))
   want <- toupper(trimws(strsplit(raw, "[,;]")[[1]]))
-  WATCHLIST[toupper(ticker) %in% want]
+  base[toupper(ticker) %in% want]
 }
+
+# Инструменты реестра, которых источник не отдаёт, — с причиной для экрана.
+watchlist_unavailable <- function() WATCHLIST[available == FALSE]
 
 # Тикер по подписи строки модели (точное совпадение, без учёта регистра и
 # краевых пробелов). NA, если такой строки в реестре нет.
