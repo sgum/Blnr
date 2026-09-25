@@ -9,8 +9,9 @@
 # модель прогноза — значит дашборд и прогноз считаются на одних данных.
 #
 # Токен — только из окружения (MARKETDATA_TOKEN), в git не попадает.
-# Эндпоинты: акции и ETF — /v1/stocks/..., индексы — /v1/indices/...
-# (см. R/watchlist.R, поле type).
+# Все наблюдаемые инструменты — акции и ETF, то есть эндпоинт один:
+# /v1/stocks/... Индексы из реестра убраны, источник их на нашем тарифе не
+# отдаёт (см. R/watchlist.R).
 
 library(httr)
 library(jsonlite)
@@ -126,15 +127,15 @@ md_status_text <- function() {
 # Отдельные котировки жгли по запросу на бумагу при каждом открытии стенда и
 # выедали суточный лимит за несколько перезагрузок.
 # Возвращает NA_real_, когда данных нет; причина — в md_last_error().
-md_last_price <- function(ticker, type = instrument_type(ticker)) {
-  cnd <- md_candles(ticker, type = type)
+md_last_price <- function(ticker) {
+  cnd <- md_candles(ticker)
   if (nrow(cnd) == 0) return(NA_real_)
   cnd[nrow(cnd), close]
 }
 
 # Дата, на которую известна «текущая» цена: последняя торговая сессия в свечах.
-md_last_price_date <- function(ticker, type = instrument_type(ticker)) {
-  cnd <- md_candles(ticker, type = type)
+md_last_price_date <- function(ticker) {
+  cnd <- md_candles(ticker)
   if (nrow(cnd) == 0) return(as.Date(NA))
   cnd[nrow(cnd), date]
 }
@@ -160,7 +161,6 @@ md_online_allowed <- function() {
 }
 
 md_candles <- function(ticker, days = WATCHLIST_RETRO_DAYS,
-                       type = instrument_type(ticker),
                        online = md_online_allowed()) {
   st <- store_read_candles(ticker)
   if (nrow(st) > 0) return(utils::tail(st, days))
@@ -169,12 +169,11 @@ md_candles <- function(ticker, days = WATCHLIST_RETRO_DAYS,
     return(empty_candles())
   }
 
-  key <- paste0("c_", type, "_", ticker, "_", days, "_", format(Sys.Date()))
+  key <- paste0("c_", ticker, "_", days, "_", format(Sys.Date()))
   hit <- .md_cache_get(key, ttl_sec = .md_ttl_today())
   if (!is.null(hit)) return(hit)
 
-  seg <- if (identical(type, "index")) "indices" else "stocks"
-  res <- md_get(sprintf("/%s/candles/D/%s/", seg, ticker),
+  res <- md_get(sprintf("/stocks/candles/D/%s/", ticker),
                 query = list(countback = days))
   empty <- empty_candles()
   if (!is.null(res$error)) {
@@ -191,7 +190,6 @@ md_candles <- function(ticker, days = WATCHLIST_RETRO_DAYS,
     high   = as.numeric(res$h),
     low    = as.numeric(res$l),
     close  = as.numeric(res$c),
-    # у индексов объёма нет — колонка остаётся NA, а не падает
     volume = if (!is.null(res$v)) as.numeric(res$v) else NA_real_
   )
   data.table::setorder(out, date)
@@ -207,9 +205,8 @@ md_candles <- function(ticker, days = WATCHLIST_RETRO_DAYS,
 # «рост от базы» тогда сравнивает текущую цену с самой собой и даёт ~0.
 # Ровно эти грабли уже были в forecast_for_date(), см. docs/dev.md.
 md_close_on_date <- function(ticker, on_date, days = WATCHLIST_RETRO_DAYS,
-                             type = instrument_type(ticker),
                              online = md_online_allowed()) {
-  cnd <- md_candles(ticker, days = days, type = type, online = online)
+  cnd <- md_candles(ticker, days = days, online = online)
   if (nrow(cnd) == 0) return(NA_real_)
   target <- as.Date(on_date)
   sub <- cnd[date <= target]

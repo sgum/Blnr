@@ -60,7 +60,7 @@ local({
   # настоящую md_candles из глобальной области, и следующие разделы падали на
   # «could not find function». Прибор не должен ломать то, что измеряет.
   real_md_candles <- md_candles
-  md_candles <<- function(ticker, days = NULL, type = NULL, online = FALSE) fake
+  md_candles <<- function(ticker, days = NULL, online = FALSE) fake
   on.exit(assign("md_candles", real_md_candles, envir = .GlobalEnv), add = TRUE)
   ok("close на 09.09 = 100",            identical(md_close_on_date("X", as.Date("2026-09-09")), 100))
   ok("close на 11.09 = 300 (не 400!)",  identical(md_close_on_date("X", as.Date("2026-09-11")), 300))
@@ -88,21 +88,15 @@ ok("General Electric -> GE",    identical(ticker_by_model_name("General Electric
 # Классический дефект: подстрочный алиас "ge" ловил "General Motors".
 ok("General Motors -> GM (не GE!)", identical(ticker_by_model_name("General Motors"), "GM"))
 ok("Gold -> GLD",               identical(ticker_by_model_name("Gold"), "GLD"))
-ok("Nasdaq -> IXIC",            identical(ticker_by_model_name("Nasdaq"), "IXIC"))
+# Индексы из реестра убраны: источник их на нашем тарифе не отдаёт. Строки
+# прогноза по ним просто не сопоставляются и отбрасываются при разборе.
+ok("Nasdaq больше не сопоставляется", is.na(ticker_by_model_name("Nasdaq")))
 ok("неизвестное имя -> NA",     is.na(ticker_by_model_name("Неизвестная Компания")))
-ok("в реестре 26 инструментов", nrow(WATCHLIST) == 26)
+ok("в реестре 23 инструмента", nrow(WATCHLIST) == 23)
 ok("тикеры уникальны",          !any(duplicated(WATCHLIST$ticker)))
 ok("имена модели уникальны",    !any(duplicated(tolower(trimws(WATCHLIST$name_model)))))
-ok("индексы идут отдельным эндпоинтом",
-   identical(sort(WATCHLIST[type == "index", ticker]), c("DJI", "IXIC", "SPX")))
-# Источник на нашем тарифе индексы не отдаёт (404 no_data по всем, включая
-# VIX). Они остаются в реестре, но помечены недоступными, иначе ночная
-# загрузка падает на том, чего в принципе не получит.
-ok("недоступные инструменты помечены",
-   identical(sort(watchlist_unavailable()$ticker), c("DJI", "IXIC", "SPX")))
-ok("к загрузке идут только доступные",
-   !any(c("SPX", "DJI", "IXIC") %in% watchlist_active()$ticker))
-ok("реестр целиком доступен явным запросом", nrow(watchlist_active(all = TRUE)) == 26)
+ok("индексов в реестре нет",
+   !any(c("SPX", "DJI", "IXIC") %in% WATCHLIST$ticker))
 
 cat("== 4. Снимки истории: идемпотентность по дате ==\n")
 tmp <- tempfile(fileext = ".csv")
