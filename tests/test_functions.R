@@ -360,6 +360,24 @@ local({
      isTRUE(all.equal(p3[ticker == "AMD", avg_price], 150)))
 
   ok("валютная конвертация не стала позицией", !("EUR/USD" %in% p3$symbol))
+  # Дата открытия — текущего лота, а не первой сделки по бумаге: распроданная
+  # и купленная заново бумага иначе приписывает себе движение цены за время,
+  # когда её не было.
+  led_re <- rbindlist(list(
+    leg(30, "2026-05-01", "TRADE", "IBM.NYSE", "IBM.NYSE",   5, 100, "r1"),
+    leg(31, "2026-05-01", "TRADE", "IBM.NYSE", "USD",     -500, NA,  "r1"),
+    leg(32, "2026-06-01", "TRADE", "IBM.NYSE", "IBM.NYSE",  -5, 120, "r2"),
+    leg(33, "2026-06-01", "TRADE", "IBM.NYSE", "USD",       600, NA,  "r2"),
+    leg(34, "2026-08-01", "TRADE", "IBM.NYSE", "IBM.NYSE",   3, 150, "r3"),
+    leg(35, "2026-08-01", "TRADE", "IBM.NYSE", "USD",      -450, NA,  "r3")
+  ))
+  pr <- ledger_positions_at(led_re, as.Date("2026-09-01"))
+  ok("дата открытия — текущего лота, а не первой сделки",
+     identical(pr[ticker == "IBM", opened_date], as.Date("2026-08-01")))
+  ok("первая сделка по бумаге сохранена отдельно",
+     identical(pr[ticker == "IBM", first_date], as.Date("2026-05-01")))
+  ok("после полной продажи позиции нет",
+     nrow(ledger_positions_at(led_re, as.Date("2026-07-01"))) == 0)
   ok("до первой сделки позиций нет",
      nrow(ledger_positions_at(led, as.Date("2026-01-20"))) == 0)
 

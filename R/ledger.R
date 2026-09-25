@@ -95,7 +95,7 @@ ledger_events <- function(ledger, currency = "USD") {
 ledger_positions_at <- function(ledger, as_of = Sys.Date(), currency = "USD") {
   empty <- data.table::data.table(
     symbol = character(), ticker = character(), quantity = numeric(),
-    cost = numeric(), avg_price = numeric(),
+    cost = numeric(), avg_price = numeric(), opened_date = as.Date(character()),
     first_date = as.Date(character()), last_date = as.Date(character())
   )
   ev <- ledger_events(ledger, currency)
@@ -106,9 +106,14 @@ ledger_positions_at <- function(ledger, as_of = Sys.Date(), currency = "USD") {
 
   out <- lapply(split(ev, ev$symbol), function(e) {
     data.table::setorder(e, value_date)
-    qty <- 0; cost <- 0
+    qty <- 0; cost <- 0; opened <- as.Date(NA)
     for (i in seq_len(nrow(e))) {
       dq <- e$qty[i]; dc <- e$cash[i]
+      # Дата открытия ТЕКУЩЕГО лота, а не первой сделки по бумаге. AMD куплена
+      # в 2024-м, полностью распродана в 2025-м и куплена заново 24.09.2026 —
+      # и до этой правки позиция показывала возраст 737 дней вместо нуля, то
+      # есть приписывала себе движение цены за время, когда бумаги не было.
+      if (abs(qty) < 1e-9 && dq > 0) opened <- e$value_date[i]
       if (dq > 0) {
         qty <- qty + dq
         cost <- cost + (-dc)          # покупка: деньги ушли, стоимость выросла
@@ -119,12 +124,14 @@ ledger_positions_at <- function(ledger, as_of = Sys.Date(), currency = "USD") {
       } else {
         qty <- qty + dq
       }
+      if (abs(qty) < 1e-9) opened <- as.Date(NA)   # лот закрыт полностью
     }
     data.table::data.table(
       symbol = e$symbol[1],
       ticker = exante_symbol_to_ticker(e$symbol[1]),
       quantity = qty, cost = cost,
       avg_price = if (qty > 0) cost / qty else NA_real_,
+      opened_date = opened,
       first_date = min(e$value_date), last_date = max(e$value_date)
     )
   })

@@ -45,7 +45,7 @@ get_portfolio_positions <- function(as_of = Sys.Date(), ledger = portfolio_ledge
         quantity      = pos$quantity,
         entry_price   = pos$avg_price,
         current_price = NA_real_,
-        purchase_date = pos$first_date,
+        purchase_date = pos$opened_date,
         source        = "exante"
       ))
     }
