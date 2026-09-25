@@ -16,3 +16,8 @@ matrix_benchmark/04_results/plots/**/*.html
 matrix_benchmark/04_results/all_benchmarks.xlsx
 matrix_benchmark/04_results/benchmark_rating.xlsx
 matrix_benchmark/05_artifacts/*
+
+# Кэш котировок marketdata.app (пишется приложением, машинно-локальный)
+data/md-cache/
+# Временные файлы блокировки Excel
+data/~$*

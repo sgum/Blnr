@@ -1,6 +1,5 @@
 # server.R
 
-library(quantmod)
 library(rhandsontable)
 library(data.table)
 library(plotly)
@@ -40,9 +39,7 @@ shinyServer(function(input, output, session) {
   output$logout_ui <- renderUI({
     req(USER$login)
     tags$a(href = "#", onclick = "Shiny.setInputValue('auth_logout', Math.random());",
-           style = "color:#15120F; padding:0 12px; line-height:56px; display:inline-block;",
-           title = paste0("Выйти (", USER$login, ")"),
-           icon("right-from-bracket"), " Выйти")
+           title = paste0("Выйти (", USER$login, ")"), "Выйти")
   })
 
   observeEvent(input$auth_logout, {
@@ -51,102 +48,17 @@ shinyServer(function(input, output, session) {
     session$reload()
   })
 
-  # Реактивная загрузка данных акций с учетом выбранных дат
-  stock_data <- reactive({
-    req(input$ticker)
-    
-    start_date <- input$date_range[1]
-    end_date <- input$date_range[2]
-    
-    # Отладочное сообщение
-    cat("Загружаем данные для тикеров:", input$ticker, "с дат", start_date, "по", end_date, "\n")
-    
-    all_data <- rbindlist(lapply(input$ticker, function(ticker) {
-      cat("Загружаем данные для тикера:", ticker, "\n")
-      stock_data <- tryCatch({
-        getSymbols(ticker, src = "yahoo", from = start_date, to = end_date, auto.assign = FALSE)
-      }, error = function(e) {
-        cat("Ошибка при загрузке данных для тикера", ticker, ": ", e$message, "\n")
-        return(NULL)
-      })
-      
-      if (is.null(stock_data)) {
-        return(NULL)
-      }
-      
-      dt <- as.data.table(data.frame(Date = index(stock_data), coredata(stock_data)))
-      
-      # Проверяем структуру данных
-      cat("Структура данных для тикера", ticker, ":", colnames(dt), "\n")
-      
-      # Удаляем префиксы из имен столбцов
-      setnames(dt, old = colnames(dt), new = gsub(paste0(ticker, "\\."), "", colnames(dt)))
-      
-      dt[, ticker := ticker]  # Добавляем колонку с тикером
-      return(dt[, .(Date, Open, High, Low, Close, Volume, ticker)])
-    }), fill = TRUE)
-    
-    if (nrow(all_data) == 0) {
-      cat("Нет данных для отображения.\n")
-    }
-    
-    return(all_data)
-  })
-  
-  # Рендеринг графика свечей
-  output$plot_candlestick <- renderPlotly({
-    req(stock_data())
-    
-    plot_data <- stock_data()
-    if (nrow(plot_data) == 0) {
-      cat("Нет данных для рендеринга графика.\n")
-      return(NULL)
-    }
-    
-    plot_ly(data = plot_data, x = ~Date, type = "candlestick",
-            open = ~Open, high = ~High, low = ~Low, close = ~Close) %>%
-      layout(title = "График котировок",
-             xaxis = list(title = "Дата"),
-             yaxis = list(title = "Цена"),
-             font = list(family = "Panton"))
-  })
-  
-  # Рендеринг редактируемой таблицы (без колонки Volume)
-  output$stock_table <- renderRHandsontable({
-    data_for_table <- stock_data()
-    if (nrow(data_for_table) == 0) {
-      cat("Нет данных для отображения в таблице.\n")
-      return(NULL)
-    }
-    
-    rhandsontable(data_for_table[order(-Date), .(Date, Open, High, Low, Close, ticker)]
-                    , readOnly = FALSE) %>%
-      hot_table(highlightCol = TRUE, highlightRow = TRUE)
-  })
-  
-  # Скачивание данных с сохранением колонки Volume
-  output$download_data <- downloadHandler(
-    filename = function() {
-      paste0("stock_data_", Sys.Date(), ".xlsx")
-    },
-    content = function(file) {
-      write.xlsx(stock_data(), file)
-    }
-  )
+  # Данные портфеля ####
 
-  # Портфель Exante ####
-
-  # Цены (вход/текущая/на 11.09) пересчитываются при старте сессии и по
-  # кнопке "Обновить котировки" — единственное место, где идёт запрос в
-  # интернет (Yahoo/Exante), чтобы не дёргать его на каждое изменение
-  # файла прогноза.
+  # Единственное место, где стенд ходит в интернет за ценами: старт сессии и
+  # кнопка «Обновить». Файл прогноза меняется чаще, чем цены, и пересчёт
+  # прогноза поверх уже полученных цен похода в сеть не требует.
   portfolio_prices <- eventReactive(input$portfolio_refresh, {
-    build_portfolio_metrics()
+    out <- build_portfolio_metrics()
+    attr(out, "as_of") <- Sys.time()
+    out
   }, ignoreNULL = FALSE)
 
-  # Добавляет прогноз/отклонение поверх уже посчитанных цен — пересчитывается
-  # и при обновлении котировок, и при каждой смене файла прогноза, без
-  # повторного похода в интернет.
   portfolio_metrics <- reactive({
     add_forecast_to_metrics(portfolio_prices(), forecast_data())
   })
@@ -155,13 +67,28 @@ shinyServer(function(input, output, session) {
     summarize_portfolio(portfolio_metrics())
   })
 
-  # Накопление невязки во времени ####
+  # Портфель целиком против прогноза, на общей базе 11.09: стоимость портфеля
+  # по модели против фактической. Именно это число отвечает на вопрос «мы
+  # обгоняем модель или отстаём», а не среднее отклонений по бумагам — оно
+  # игнорировало бы вес позиции.
+  portfolio_vs_forecast <- reactive({
+    m <- portfolio_metrics()
+    if (is.null(m) || nrow(m) == 0 || !"forecast_pct" %in% names(m)) return(NULL)
+    ok <- is.finite(m$base_price) & is.finite(m$forecast_pct) &
+          is.finite(m$current_value) & is.finite(m$quantity)
+    if (!any(ok)) return(NULL)
+    base_value <- sum(m$quantity[ok] * m$base_price[ok])
+    fcst_value <- sum(m$quantity[ok] * m$base_price[ok] * (1 + m$forecast_pct[ok] / 100))
+    fact_value <- sum(m$current_value[ok])
+    if (!is.finite(base_value) || base_value == 0) return(NULL)
+    fact_pct <- (fact_value / base_value - 1) * 100
+    fcst_pct <- (fcst_value / base_value - 1) * 100
+    list(fact_pct = fact_pct, fcst_pct = fcst_pct, dev_pp = fact_pct - fcst_pct)
+  })
 
-  # История снимков (факт/прогноз по дням). Обновляется реактивно после записи.
+  # История снимков (факт/прогноз по дням) — для панели накопления невязки.
   snapshots_rv <- reactiveVal(read_snapshots())
 
-  # Раз в день, когда есть посчитанные метрики с загруженным прогнозом,
-  # дописываем снимок в CSV-лог (идемпотентно по дате) и обновляем историю.
   snapshot_done <- reactiveVal(NULL)
   observe({
     m <- portfolio_metrics()
@@ -181,20 +108,42 @@ shinyServer(function(input, output, session) {
   forecast_source <- reactiveVal(NULL)
 
   # Автозагрузка файла по умолчанию (FORECAST_XLSX_PATH из global.R) при
-  # старте сессии — если файл существует локально у того, кто запустил
-  # приложение. Ошибку парсинга не показываем как критическую: вкладку
-  # "Загрузка прогнозов" всегда можно использовать вручную.
+  # старте сессии — если файл лежит на месте. Ошибка парсинга не критична:
+  # файл всегда можно подать вручную через кнопку «Прогноз…».
   if (file.exists(FORECAST_XLSX_PATH)) {
     auto_forecast <- tryCatch(parse_forecast_file(FORECAST_XLSX_PATH), error = function(e) NULL)
     if (!is.null(auto_forecast)) {
       forecast_data(auto_forecast)
-      forecast_source(sprintf("Автоматически загружено из %s", FORECAST_XLSX_PATH))
+      forecast_source(sprintf("автозагрузка: %s", basename(FORECAST_XLSX_PATH)))
     }
   }
 
+  observeEvent(input$open_forecast, {
+    showModal(modalDialog(
+      title = "Файл модельного прогноза",
+      size = "l", easyClose = TRUE, footer = modalButton("Закрыть"),
+      tags$p(style = "font-size:12px;color:#5C5C5C",
+             "Лист «Q_mean_var», блок «mean»: строки — инструменты реестра, ",
+             "столбцы — шаги .qM0, .qM1, … Значения — уже накопленный ",
+             "относительный прогноз роста; шаг k раскладывается на торговые ",
+             sprintf("дни от %s.", format(FORECAST_BASELINE_DATE, "%d.%m.%Y"))),
+      fileInput("forecast_file", "Файл (.xlsx)", accept = ".xlsx", width = "100%"),
+      uiOutput("forecast_sheet_ui"),
+      checkboxInput("forecast_is_share",
+                    "Значения в файле — доли (0.012 = 1.2%), умножить на 100",
+                    value = TRUE),
+      uiOutput("forecast_modal_status"),
+      # 26 инструментов в ширину не влезают в модалку — без своего скролла
+      # таблица вылезает за её края поверх страницы.
+      tags$div(style = "max-height:300px;overflow:auto;font-size:11px",
+               tableOutput("forecast_preview"))
+    ))
+  })
+
   output$forecast_sheet_ui <- renderUI({
     req(input$forecast_file)
-    sheets <- tryCatch(forecast_sheet_names(input$forecast_file$datapath), error = function(e) character(0))
+    sheets <- tryCatch(forecast_sheet_names(input$forecast_file$datapath),
+                       error = function(e) character(0))
     if (length(sheets) <= 1) return(NULL)
     sel <- if ("Q_mean_var" %in% sheets) "Q_mean_var" else sheets[1]
     selectInput("forecast_sheet", "Лист", choices = sheets, selected = sel)
@@ -204,32 +153,30 @@ shinyServer(function(input, output, session) {
     req(input$forecast_file)
     sheet <- input$forecast_sheet %||% forecast_default_sheet(input$forecast_file$datapath)
     parsed <- tryCatch(
-      parse_forecast_file(input$forecast_file$datapath, sheet = sheet, as_fraction = isTRUE(input$forecast_is_share)),
+      parse_forecast_file(input$forecast_file$datapath, sheet = sheet,
+                          as_fraction = isTRUE(input$forecast_is_share)),
       error = function(e) {
-        showNotification(paste("Ошибка чтения файла прогноза:", conditionMessage(e)), type = "error", duration = 10)
+        showNotification(paste("Ошибка чтения файла прогноза:", conditionMessage(e)),
+                          type = "error", duration = 10)
         NULL
       }
     )
     if (!is.null(parsed)) {
       forecast_data(parsed)
-      forecast_source(sprintf("Загружено вручную: %s (лист: %s)", input$forecast_file$name, sheet))
+      forecast_source(sprintf("%s, лист %s", input$forecast_file$name, sheet))
     }
   })
 
-  output$forecast_status <- renderUI({
+  output$forecast_modal_status <- renderUI({
     fd <- forecast_data()
     if (is.null(fd) || nrow(fd) == 0) {
-      return(tags$p(icon("triangle-exclamation"),
-                     " Прогноз не загружен — во вкладке «Портфель Exante» отклонение от прогноза будет пустым.",
-                     style = "color:#b26a00; font-weight:bold;"))
+      return(tags$p(style = "color:#8a5d00;font-size:12px",
+                     "Прогноз не загружен — сравнение факта с моделью недоступно."))
     }
-    tags$p(icon("circle-check"),
-           sprintf(" %s. Бумаг: %s. Дат: %s — %s. База отсчёта прогноза: %s.",
-                   forecast_source(),
-                   paste(sort(unique(fd$ticker)), collapse = ", "),
-                   format(min(fd$date)), format(max(fd$date)),
-                   format(FORECAST_BASELINE_DATE)),
-           style = "color:#2e7d32; font-weight:bold;")
+    tags$p(style = "color:#4d7a33;font-size:12px",
+           sprintf("Загружено (%s). Бумаг: %d. Горизонт: %s — %s.",
+                   forecast_source(), length(unique(fd$ticker)),
+                   format(min(fd$date), "%d.%m.%Y"), format(max(fd$date), "%d.%m.%Y")))
   })
 
   output$forecast_preview <- renderTable({
@@ -237,139 +184,299 @@ shinyServer(function(input, output, session) {
     req(fd)
     wide <- data.table::dcast(fd, date ~ ticker, value.var = "forecast_growth_pct")
     data.table::setorder(wide, date)
-    # Прогноз длинный (сотни торговых дней) — показываем только ближайший
-    # горизонт, чтобы превью не разрослось на весь экран.
-    wide <- utils::head(wide, 20L)
+    wide <- utils::head(wide, 15L)
     # date — это Date; renderTable иначе печатает его числом-серийником.
     wide[, date := format(date, "%Y-%m-%d")]
     wide
   }, striped = TRUE, digits = 2)
 
-  output$portfolio_source_status <- renderUI({
+  # Шапка ####
+
+  output$hd_source <- renderUI({
     if (exante_has_credentials()) {
-      tags$span(icon("plug"), " Источник данных: Exante API (боевой счёт)",
-                 style = "color: #2e7d32; font-weight: bold;")
+      tags$span(class = "chip", "Источник: ", tags$b("Exante API"))
     } else {
-      tags$span(icon("triangle-exclamation"),
-                 " Exante API не настроен (нет EXANTE_API_ID / EXANTE_SHARED_KEY) — ",
-                 "используется портфель, заданный вручную, с котировками Yahoo Finance. См. docs/EXANTE_API.md.",
-                 style = "color: #b26a00; font-weight: bold;")
+      tags$span(class = "chip chip--warn",
+                title = paste("Нет EXANTE_API_ID / EXANTE_SHARED_KEY —",
+                              "позиции взяты из портфеля, заданного вручную.",
+                              "Цены при этом живые (marketdata.app)."),
+                "Позиции: ", tags$b("вручную"))
     }
   })
 
-  # Простая KPI-плитка без привязки к конкретной версии API bs4Dash.
-  kpi_tile <- function(value, subtitle, bg) {
-    div(style = paste0(
-          "background:", bg, "; color:white; border-radius:6px;",
-          "padding:16px; margin-bottom:15px;"
-        ),
-        div(style = "font-size:22px; font-weight:bold;", value),
-        div(style = "font-size:11px; opacity:0.9;", subtitle))
-  }
-
-  output$portfolio_value_box <- renderUI({
-    s <- portfolio_summary()
-    kpi_tile(paste0("$", format(round(s$current_value, 0), big.mark = " ")),
-              "Текущая стоимость портфеля", "#37474f")
+  output$hd_forecast <- renderUI({
+    fd <- forecast_data()
+    if (is.null(fd) || nrow(fd) == 0) {
+      return(tags$span(class = "chip chip--warn", "Прогноз ", tags$b("не загружен")))
+    }
+    tags$span(class = "chip",
+              title = sprintf("%s. База отсчёта %s, горизонт до %s.",
+                              forecast_source(),
+                              format(FORECAST_BASELINE_DATE, "%d.%m.%Y"),
+                              format(max(fd$date), "%d.%m.%Y")),
+              "Прогноз: ", tags$b(sprintf("%d бумаг", length(unique(fd$ticker)))))
   })
 
-  output$portfolio_pnl_box <- renderUI({
-    s <- portfolio_summary()
-    kpi_tile(paste0(ifelse(s$pnl >= 0, "+", ""), "$", format(round(s$pnl, 0), big.mark = " ")),
-              "Прибыль/убыток от покупки",
-              ifelse(s$pnl >= 0, "#2e7d32", "#c62828"))
+  output$hd_updated <- renderUI({
+    ts <- attr(portfolio_prices(), "as_of")
+    tags$span(class = "chip", "Котировки: ",
+              tags$b(if (is.null(ts)) "—" else format(ts, "%H:%M:%S")))
   })
 
-  output$portfolio_growth_box <- renderUI({
-    s <- portfolio_summary()
-    kpi_tile(paste0(ifelse(s$growth_pct >= 0, "+", ""), round(s$growth_pct, 2), "%"),
-              "Рост портфеля с 14.09.2026",
-              ifelse(s$growth_pct >= 0, "#2e7d32", "#c62828"))
+  # KPI ####
+
+  output$kpi_strip <- renderUI({
+    s  <- portfolio_summary()
+    vf <- portfolio_vs_forecast()
+    tiles <- list(
+      kpi(fmt_money(s$current_value), "Стоимость портфеля"),
+      kpi(fmt_signed_money(s$pnl), "Прибыль/убыток от покупки", tone_of(s$pnl)),
+      kpi(fmt_pct(s$growth_pct), "Рост от даты покупки", tone_of(s$growth_pct))
+    )
+    if (!is.null(vf)) {
+      tiles <- c(tiles, list(
+        kpi(fmt_pp(vf$dev_pp), "Портфель против модели", tone_of(vf$dev_pp),
+            tip = sprintf(paste("Стоимость портфеля от базы %s: факт %s, модель %s.",
+                                "Положительное значение — портфель идёт быстрее модели.",
+                                "Считается по стоимости, то есть с учётом веса позиций."),
+                          format(FORECAST_BASELINE_DATE, "%d.%m.%Y"),
+                          fmt_pct(vf$fact_pct), fmt_pct(vf$fcst_pct)))
+      ))
+    }
+    do.call(tagList, tiles)
   })
 
-  output$portfolio_table <- renderRHandsontable({
-    dt <- portfolio_metrics()
-    display <- dt[, .(
-      Тикер                 = ticker,
-      Количество            = quantity,
-      `Цена входа`          = round(entry_price, 2),
-      `Тек. цена`           = round(current_price, 2),
-      `Стоимость`           = round(current_value, 2),
-      `Рост от покупки, %`  = round(growth_pct, 2),
-      `Рост от 11.09, %`    = round(growth_from_base_pct, 2),
-      `Прогноз от 11.09, %` = round(forecast_pct, 2),
-      `Отклонение, пп`      = round(dev_pct, 2),
-      `Вес, %`              = round(weight_pct, 2)
-    )]
-    rhandsontable(display, readOnly = TRUE) %>%
-      hot_table(highlightCol = TRUE, highlightRow = TRUE)
+  # Таблица позиций ####
+
+  # Выбор инструмента: клик по строке таблицы и выпадающий список над
+  # графиком — один и тот же выбор, поэтому клик обновляет список, а график
+  # слушает только список.
+  observeEvent(input$pick_ticker, {
+    updateSelectInput(session, "sel_ticker", selected = input$pick_ticker)
   })
 
-  output$portfolio_pie <- renderPlotly({
-    dt <- portfolio_metrics()
-    plot_ly(dt, labels = ~ticker, values = ~current_value, type = "pie",
-            textinfo = "label+percent") %>%
-      layout(font = list(family = "Panton"))
-  })
+  # Левая колонка: таблица позиций (по высоте содержимого) и под ней сравнение
+  # факта с моделью, которое добирает оставшуюся высоту. Панель сравнения
+  # появляется только когда прогноз загружен — иначе колонка остаётся из одной
+  # таблицы, а не из таблицы и пустой коробки.
+  output$left_col <- renderUI({
+    fd <- forecast_data()
+    has_fc <- !is.null(fd) && nrow(fd) > 0
+    base_lab <- format(FORECAST_BASELINE_DATE, "%d.%m.%Y")
 
-  # Факт (от уровня 11.09) против прогноза из xlsx, на той же базе —
-  # см. build_portfolio_metrics()/add_forecast_to_metrics().
-  output$portfolio_growth_plot <- renderPlotly({
-    dt <- portfolio_metrics()
-    plot_ly(dt, x = ~ticker, y = ~growth_from_base_pct, type = "bar",
-            name = "Факт (от 11.09)", marker = list(color = "#2e7d32")) %>%
-      add_trace(y = ~forecast_pct, name = "Прогноз (от 11.09)",
-                 marker = list(color = "#9e9e9e")) %>%
-      layout(
-        title = "Факт против прогноза, % от уровня 11.09.2026",
-        barmode = "group",
-        xaxis = list(title = "Тикер"),
-        yaxis = list(title = "%"),
-        font = list(family = "Panton")
+    positions <- panel(
+      "Позиции",
+      tip = paste0(
+        "Цены — marketdata.app, тот же источник, что кормит внешнюю модель. ",
+        "«От ", format(FORECAST_BASELINE_DATE, "%d.%m"), "» — рост от базы ",
+        "прогноза: модель построена от неё же, поэтому факт и прогноз ",
+        "сравнимы напрямую. Δ = факт − модель в процентных пунктах, ",
+        "плюс означает, что бумага идёт быстрее модели. ",
+        "Клик по строке открывает её график справа."),
+      body_class = "panel-body--flush",
+      uiOutput("pos_table")
+    )
+    if (!has_fc) {
+      return(tags$div(class = "blnr-col blnr-col--solo", positions))
+    }
+    tags$div(
+      class = "blnr-col",
+      positions,
+      panel(
+        "Факт против модели",
+        tip = paste0("По каждой бумаге: фактический рост от ", base_lab,
+                     " рядом с прогнозом модели на сегодня. Расхождение ",
+                     "столбиков и есть повод для решения по позиции."),
+        body_class = "panel-body--plot",
+        plotlyOutput("chart_vs_forecast", height = "100%")
       )
+    )
   })
 
-  # Динамика невязки (факт − прогноз) по мере накопления снимков.
-  output$deviation_history_note <- renderUI({
-    snaps <- snapshots_rv()
-    n_days <- length(unique(snaps$date))
-    if (n_days == 0) {
-      tags$p("История пока пуста. Снимок факта/прогноза пишется автоматически ",
-             "раз в день при открытии вкладки (нужен загруженный прогноз). ",
-             "График появится, когда наберётся хотя бы один день.",
-             style = "font-size:11px; color:#777;")
-    } else if (n_days == 1) {
-      tags$p(sprintf("Пока один день истории (%s) — динамика появится со второго снимка. ",
-                     format(max(snaps$date))),
-             "Лог: ", tags$code(SNAPSHOT_LOG_PATH),
-             style = "font-size:11px; color:#777;")
-    } else {
-      tags$p(sprintf("Дней в истории: %d (%s — %s).", n_days,
-                     format(min(snaps$date)), format(max(snaps$date))),
-             style = "font-size:11px; color:#777;")
+  output$pos_table <- renderUI({
+    m <- portfolio_metrics()
+    req(nrow(m) > 0)
+    sel <- input$sel_ticker %||% ""
+    has_fc <- any(is.finite(m$forecast_pct))
+
+    num <- function(x, f) {
+      tags$td(class = if (!is.finite(x)) "na" else if (x >= 0) "up" else "down", f(x))
     }
+    plain <- function(x, digits = 2) {
+      tags$td(class = if (is.finite(x)) NULL else "na",
+              if (is.finite(x)) formatC(x, format = "f", digits = digits, big.mark = " ") else "—")
+    }
+
+    rows <- lapply(seq_len(nrow(m)), function(i) {
+      r <- m[i]
+      tags$tr(
+        class = if (identical(r$ticker, sel)) "is-sel" else NULL,
+        onclick = sprintf("Shiny.setInputValue('pick_ticker','%s',{priority:'event'})", r$ticker),
+        tags$td(tags$span(class = "tk", r$ticker)),
+        tags$td(formatC(r$quantity, format = "d")),
+        plain(r$entry_price), plain(r$current_price),
+        plain(r$current_value, 0),
+        # Вес — числом и заливкой ячейки: отдельная карточка «Структура
+        # портфеля» ради тех же пяти чисел заняла бы полосу экрана.
+        tags$td(
+          class = "wcell",
+          style = sprintf(
+            "background:linear-gradient(to left,#E3F0F5 %1$.1f%%,transparent %1$.1f%%)",
+            max(0, min(100, r$weight_pct))),
+          formatC(r$weight_pct, format = "f", digits = 1), "%"),
+        num(r$growth_pct, fmt_pct),
+        num(r$growth_from_base_pct, fmt_pct),
+        if (has_fc) num(r$forecast_pct, fmt_pct),
+        if (has_fc) num(r$dev_pct, fmt_pp)
+      )
+    })
+
+    s <- portfolio_summary()
+    vf <- portfolio_vs_forecast()
+    base_lab <- format(FORECAST_BASELINE_DATE, "%d.%m")
+
+    tags$table(
+      class = "pos",
+      tags$thead(tags$tr(
+        tags$th("Тикер"), tags$th("Кол-во"), tags$th("Вход"), tags$th("Тек."),
+        tags$th("Стоимость"), tags$th("Вес"), tags$th("От покупки"),
+        tags$th(paste0("От ", base_lab)),
+        if (has_fc) tags$th("Модель"),
+        if (has_fc) tags$th("Δ")
+      )),
+      tags$tbody(rows),
+      tags$tfoot(tags$tr(
+        tags$td("Итого"), tags$td(), tags$td(), tags$td(),
+        tags$td(fmt_money(s$current_value)), tags$td("100%"),
+        tags$td(class = if (s$growth_pct >= 0) "up" else "down", fmt_pct(s$growth_pct)),
+        tags$td(class = if (!is.null(vf) && vf$fact_pct >= 0) "up" else "down",
+                if (is.null(vf)) "—" else fmt_pct(vf$fact_pct)),
+        if (has_fc) tags$td(class = if (!is.null(vf) && vf$fcst_pct >= 0) "up" else "down",
+                            if (is.null(vf)) "—" else fmt_pct(vf$fcst_pct)),
+        if (has_fc) tags$td(class = if (!is.null(vf) && vf$dev_pp >= 0) "up" else "down",
+                            if (is.null(vf)) "—" else fmt_pp(vf$dev_pp))
+      ))
+    )
   })
 
-  output$deviation_history_plot <- renderPlotly({
+  # График инструмента ####
+
+  output$chart_instrument <- renderPlotly({
+    tk <- req(input$sel_ticker)
+    cnd <- md_candles(tk)
+    # shiny::validate явно: jsonlite (грузится через R/marketdata.R) перекрывает
+    # validate своей функцией проверки JSON, и голый вызов уходит не туда.
+    shiny::validate(shiny::need(nrow(cnd) > 0, sprintf(
+      "Нет котировок по %s: marketdata.app не отдал свечи (проверьте MARKETDATA_TOKEN).", tk)))
+
+    p <- plot_ly(
+      cnd, x = ~date, type = "candlestick",
+      open = ~open, high = ~high, low = ~low, close = ~close, name = tk,
+      increasing = list(line = list(color = BLNR_COLORS$up, width = 1),
+                        fillcolor = BLNR_COLORS$up),
+      decreasing = list(line = list(color = BLNR_COLORS$down, width = 1),
+                        fillcolor = BLNR_COLORS$down),
+      hoverinfo = "x+y"
+    )
+
+    # Траектория цены по модели: прогноз хранится как накопленный процент от
+    # базы, поэтому цена = цена базы * (1 + прогноз/100). Горизонт обрезаем
+    # месяцем вперёд — иначе прогноз до 2028 сожмёт свечи в полоску.
+    fd <- forecast_data()
+    if (!is.null(fd) && nrow(fd) > 0 && tk %in% fd$ticker) {
+      base_px <- md_close_on_date(tk, FORECAST_BASELINE_DATE)
+      if (is.finite(base_px)) {
+        horizon <- max(cnd$date) + 30
+        f <- fd[ticker == tk][date <= horizon]
+        if (nrow(f) > 0) {
+          p <- add_trace(p, data = f, x = ~date,
+                         y = base_px * (1 + f$forecast_growth_pct / 100),
+                         type = "scatter", mode = "lines", inherit = FALSE,
+                         name = "модель",
+                         line = list(color = BLNR_COLORS$accent, width = 1.6,
+                                     dash = "dash"))
+        }
+      }
+    }
+
+    # Цена входа — только если бумага действительно в портфеле.
+    m <- portfolio_metrics()
+    shapes <- list()
+    if (tk %in% m$ticker) {
+      ep <- m[ticker == tk][1, entry_price]
+      if (is.finite(ep)) {
+        shapes <- list(list(type = "line", xref = "paper", x0 = 0, x1 = 1,
+                            y0 = ep, y1 = ep,
+                            line = list(color = BLNR_COLORS$mute, width = 1,
+                                        dash = "dot")))
+      }
+    }
+
+    blnr_plot_layout(
+      p,
+      showlegend = FALSE,
+      shapes = shapes,
+      xaxis = list(title = "", rangeslider = list(visible = FALSE),
+                   gridcolor = "#F0EFED"),
+      yaxis = list(title = "", gridcolor = "#F0EFED", tickprefix = "$")
+    )
+  })
+
+  # Нижний ряд ####
+  # Карточка рисуется только когда в ней есть результат: панель сравнения —
+  # когда загружен прогноз, панель накопления невязки — когда снимков хотя бы
+  # за два дня. Пустых коробок с объяснением, почему они пусты, на экране нет.
+  output$bot_panels <- renderUI({
+    n_days <- length(unique(snapshots_rv()$date))
+    # Меньше двух дней — рисовать нечего, и нижний ряд не занимает экран вовсе.
+    if (n_days < 2) return(NULL)
+    panel(
+      "Невязка во времени",
+      tip = paste0("Факт − модель, процентных пунктов, по дням. Снимок ",
+                   "пишется раз в день автоматически; лог: ", SNAPSHOT_LOG_PATH, "."),
+      body_class = "panel-body--plot",
+      plotlyOutput("chart_deviation", height = "100%")
+    )
+  })
+
+  output$chart_vs_forecast <- renderPlotly({
+    m <- portfolio_metrics()
+    req(nrow(m) > 0)
+    blnr_plot_layout(
+      add_trace(
+        plot_ly(m, x = ~ticker, y = ~growth_from_base_pct, type = "bar",
+                name = "факт", marker = list(color = BLNR_COLORS$up)),
+        y = ~forecast_pct, name = "модель",
+        marker = list(color = BLNR_COLORS$mute)),
+      barmode = "group",
+      legend = list(orientation = "h", x = 0, y = 1.14, font = list(size = 10)),
+      margin = list(l = 40, r = 10, t = 20, b = 26),
+      xaxis = list(title = ""),
+      yaxis = list(title = "", ticksuffix = "%", gridcolor = "#F0EFED")
+    )
+  })
+
+  output$chart_deviation <- renderPlotly({
     snaps <- snapshots_rv()
     req(nrow(snaps) > 0)
     data.table::setorder(snaps, date)
-    days <- format(sort(unique(snaps$date)), "%Y-%m-%d")
+    days <- format(sort(unique(snaps$date)), "%d.%m")
     p <- plot_ly()
     for (tk in sort(unique(snaps$ticker))) {
       sub <- snaps[ticker == tk]
-      p <- add_trace(p, x = format(sub$date, "%Y-%m-%d"), y = sub$dev_pct, name = tk,
-                     type = "scatter",
-                     mode = if (nrow(sub) == 1) "markers" else "lines+markers")
+      p <- add_trace(p, x = format(sub$date, "%d.%m"), y = sub$dev_pct, name = tk,
+                     type = "scatter", mode = "lines+markers",
+                     line = list(width = 1.4), marker = list(size = 4))
     }
-    p %>% layout(
-      title = "Невязка факт − прогноз, пп (от 11.09.2026)",
-      # категориальная ось: при одном дне plotly иначе растягивает время до
-      # долей секунды.
-      xaxis = list(title = "Дата снимка", type = "category",
+    blnr_plot_layout(
+      p,
+      legend = list(orientation = "h", x = 0, y = 1.14, font = list(size = 10)),
+      margin = list(l = 40, r = 10, t = 20, b = 26),
+      # категориальная ось: при малом числе дней plotly иначе растягивает
+      # время до долей секунды.
+      xaxis = list(title = "", type = "category",
                    categoryorder = "array", categoryarray = days),
-      yaxis = list(title = "пп"),
-      font = list(family = "Panton")
+      yaxis = list(title = "", ticksuffix = " пп", gridcolor = "#F0EFED")
     )
   })
 })

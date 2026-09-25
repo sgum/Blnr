@@ -13,8 +13,10 @@ shinyUI(
     useShinyjs(),
     tags$head(
       tags$title("Blnr"),
-      tags$link(rel = "stylesheet",
-                href = "https://fonts.googleapis.com/css2?family=Panton:wght@400;700&display=swap"),
+      # Panton — фирменный шрифт ЦД, его нет в Google Fonts (прежняя ссылка
+      # туда просто отдавала 404, и весь стенд рисовался системным шрифтом).
+      # Начертание лежит в www/Panton-Regular.otf, @font-face — в www/CSS.css.
+      tags$link(rel = "stylesheet", href = "CSS.css"),
       loginCSS()
     ),
     uiOutput("gate")

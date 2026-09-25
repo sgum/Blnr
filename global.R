@@ -1,22 +1,17 @@
 # global.R
 
 library(shiny)
-library(quantmod)
 library(rhandsontable)
 library(data.table)
 library(plotly)
 library(openxlsx)
-library(bs4Dash)
 # Пакеты, используемые при СБОРКЕ UI (ui.R сорсит global.R первым): без них
-# ui.R падает на setSliderColor/useShinyjs/use_theme, т.к. server.R с их
-# library() выполняется позже.
+# ui.R падает на useShinyjs, т.к. server.R с их library() выполняется позже.
 library(shinyWidgets)
 library(shinyjs)
-library(fresh)
 
-tickers <- c("AAPL", "NVDA", "MSFT", "TSLA", "GOOG", "AMZN", "AMD",
-             "META", "NFLX", "INTC", "IBM", "GM", "GE", "BP",
-             "SHEL", "CVX", "GS", "MS", "JPM", "SAP", "F")
+# Перечень наблюдаемых инструментов живёт в R/watchlist.R (WATCHLIST) —
+# единый реестр для котировок, прогноза и выбора на экране.
 
 # Портфель пользователя (покупка 14.09.2026), используется как резервный
 # источник, если доступ к Exante API не настроен. Количество и цена входа —
@@ -55,13 +50,10 @@ source("R/exante_api.R")
 source("R/portfolio.R")
 source("R/forecast.R")
 source("R/auth_ad.R")
+source("R/ui_kit.R")
 
 # Модули интерфейса — в глобальной области, т.к. dashboardUI()/loginUI() строятся
 # из server.R (output$gate), а не только из ui.R.
-source("ui/sidebar_ui.R")
-source("ui/download_history_ui.R")
-source("ui/upload_forecasts_ui.R")
-source("ui/portfolio_monitoring_ui.R")
 source("ui/login_ui.R")
 source("ui/dashboard_ui.R")
 

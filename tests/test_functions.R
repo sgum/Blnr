@@ -116,5 +116,62 @@ ok("логин нормализуется к короткому",     identical(
 ok("bind пробует UPN и NETBIOS",
    identical(ad_bind_candidates("s.gumerov"), c("s.gumerov@ad.dtwin.ru", "AD\\s.gumerov")))
 
+cat("== 6. Сборка интерфейса ==\n")
+# Гейт против класса дефектов «экран не собрался», который до выкладки ничем
+# не виден: перекрытые имена функций (jsonlite::validate поверх shiny::validate,
+# httr::config поверх plotly::config), пакет, нужный при СБОРКЕ UI, но
+# подключённый только в server.R, потерянный source() после перестановки
+# модулей. Всё это даёт белый экран уже на проде, а не ошибку при старте.
+ui_render <- tryCatch({
+  suppressWarnings(suppressMessages({
+    library(shiny); library(plotly); library(shinyjs); library(shinyWidgets)
+  }))
+  source("R/ui_kit.R"); source("ui/login_ui.R"); source("ui/dashboard_ui.R")
+  # as.character() на теге НЕДОСТАТОЧНО: htmltools выносит содержимое
+  # tags$head в отдельное поле renderTags()$head, поэтому весь CSS экрана в
+  # строку не попадает — проверки по стилям тогда «проходят» на пустоте.
+  flat <- function(x) {
+    rt <- htmltools::renderTags(x)
+    paste(paste(as.character(rt$head), collapse = "\n"),
+          paste(as.character(rt$html), collapse = "\n"), sep = "\n")
+  }
+  list(login = flat(loginUI()), dash = flat(dashboardUI()))
+}, error = function(e) e)
+
+ok("UI собирается без ошибки",
+   !inherits(ui_render, "condition"))
+if (!inherits(ui_render, "condition")) {
+  ok("в форме входа есть поля логина и пароля",
+     grepl("auth_login", ui_render$login, fixed = TRUE) &&
+     grepl("auth_password", ui_render$login, fixed = TRUE))
+  ok("на дашборде есть левая колонка и график инструмента",
+     grepl("left_col", ui_render$dash, fixed = TRUE) &&
+     grepl("chart_instrument", ui_render$dash, fixed = TRUE))
+  # Выбор инструмента должен быть проставлен прямо в разметке: сделанный из
+  # сервера updateSelectInput доходит до клиента раньше, чем появляется сам
+  # виджет, и график остаётся пустым.
+  ok("в выпадающем списке предвыбран инструмент портфеля",
+     grepl(sprintf("selected>%s", portfolio_holdings$ticker[1]), ui_render$dash) ||
+     grepl(sprintf("value=\"%s\" selected", portfolio_holdings$ticker[1]), ui_render$dash))
+  ok("в списке весь реестр наблюдения",
+     sum(vapply(WATCHLIST$ticker,
+                function(tk) grepl(sprintf(">%s · |>%s · ", tk, tk),
+                                   ui_render$dash), logical(1))) >= 20)
+  # Пояснения живут под «i» (конституция): виджета, содержимого которого —
+  # только текст-подсказка, на экране быть не должно.
+  ok("подсказки оформлены как data-tip под «i»",
+     grepl("class=\"itip\"", ui_render$dash, fixed = TRUE) &&
+     grepl("data-tip=", ui_render$dash, fixed = TRUE))
+  # Панель обрезает всплывающую подсказку, если ей вернуть overflow:hidden.
+  ok("панель не обрезает всплывающую подсказку",
+     !grepl("\\.panel\\{[^}]*overflow:hidden", ui_render$dash))
+  # display:contents убирает обёртку uiOutput из РАСКЛАДКИ, но не из дерева
+  # для селекторов: правило через `>` к панели внутри неё не применяется
+  # (высота нижнего ряда молча терялась, и он распирал экран).
+  ok("высота нижнего ряда задана селектором потомка",
+     grepl("\\.blnr-row--bot \\.panel\\{height", ui_render$dash) &&
+     !grepl("\\.blnr-row--bot>\\.panel\\{height", ui_render$dash))
+}
+
 cat(sprintf("\nИтог: %s\n", if (FAILED == 0L) "все проверки пройдены" else sprintf("ПРОВАЛОВ: %d", FAILED)))
 quit(status = if (FAILED == 0L) 0L else 1L)
