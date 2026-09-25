@@ -189,3 +189,41 @@ store_sessions_window <- function(n = 150L, as_of = NULL,
   if (!is.null(as_of)) s <- s[s <= as.Date(as_of)]
   utils::tail(s, n)
 }
+
+# --- Реестр операций счёта --------------------------------------------------
+# Хранится рядом с рядами котировок и по тем же причинам: тянуть 450 операций
+# из Exante на каждое движение ползунка незачем, а на сервере кред может не
+# быть вовсе — тогда стенд работает на последнем сохранённом реестре и честно
+# показывает его дату.
+store_ledger_path <- function() file.path(BLNR_STORE_DIR, "ledger.csv")
+
+store_read_ledger <- function() {
+  f <- store_ledger_path()
+  if (!file.exists(f)) return(empty_ledger())
+  dt <- tryCatch(data.table::fread(f), error = function(e) NULL)
+  if (is.null(dt) || nrow(dt) == 0) return(empty_ledger())
+  dt[, value_date := as.Date(value_date)]
+  for (col in c("type", "symbol", "asset", "order_id")) {
+    if (col %in% names(dt)) dt[[col]] <- as.character(dt[[col]])
+  }
+  data.table::setorder(dt, value_date, id)
+  dt[]
+}
+
+store_write_ledger <- function(ledger) {
+  dir.create(BLNR_STORE_DIR, showWarnings = FALSE, recursive = TRUE)
+  data.table::fwrite(ledger, store_ledger_path())
+  invisible(TRUE)
+}
+
+store_has_ledger <- function() {
+  f <- store_ledger_path()
+  file.exists(f) && file.info(f)$size > 0
+}
+
+# Когда реестр последний раз обновлялся из Exante.
+store_ledger_updated <- function() {
+  f <- store_ledger_path()
+  if (!file.exists(f)) return(NULL)
+  file.mtime(f)
+}

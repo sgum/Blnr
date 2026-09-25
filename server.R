@@ -74,9 +74,23 @@ shinyServer(function(input, output, session) {
     if (length(s)) s else as.Date(NA)
   })
 
+  # Реестр операций счёта: состав портфеля, средние цены и денежный остаток
+  # на любую дату. Читается из хранилища; кнопка «Обновить» перетягивает его
+  # из Exante, если креды настроены.
+  ledger_rv <- reactiveVal(NULL)
+  ledger_now <- reactive({
+    store_touch()
+    led <- portfolio_ledger(refresh = isTRUE(ledger_rv()))
+    led
+  })
+  observeEvent(input$portfolio_refresh, {
+    ledger_rv(TRUE)
+    store_touch(Sys.time())
+  })
+
   portfolio_prices <- reactive({
     store_touch()
-    build_portfolio_metrics(as_of = sel_date())
+    build_portfolio_metrics(as_of = sel_date(), ledger = ledger_now())
   })
 
   # Прогноз сравнивается на ТУ ЖЕ дату, что и факт: иначе ползунок двигал бы
@@ -217,18 +231,48 @@ shinyServer(function(input, output, session) {
     wide
   }, striped = TRUE, digits = 2)
 
+  # Выгрузка ретроспективных рядов в типовом формате мониторинга владельца
+  # (см. R/export_xlsx.R). Глубина — та же, что на экране: скачивается ровно
+  # то окно, на которое человек смотрит.
+  output$export_xlsx <- downloadHandler(
+    filename = function() {
+      sprintf("Мониторинг %s.xlsx", format(sel_date(), "%d.%m.%Y"))
+    },
+    content = function(file) {
+      wb <- build_monitoring_workbook(
+        tickers = watchlist_active()$ticker,
+        days = BLNR_TIMELINE_DAYS,
+        as_of = sel_date()
+      )
+      openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
+    },
+    contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  )
+
   # Шапка ####
 
   output$hd_source <- renderUI({
-    if (exante_has_credentials()) {
-      tags$span(class = "bdg", "Источник: ", tags$b("Exante API"))
-    } else {
-      tags$span(class = "bdg warn",
-                title = paste("Нет EXANTE_API_ID / EXANTE_SHARED_KEY —",
-                              "позиции взяты из портфеля, заданного вручную.",
-                              "Цены при этом живые (marketdata.app)."),
-                "Позиции: ", tags$b("вручную"))
+    m <- portfolio_prices()
+    src <- if (nrow(m) > 0) m$source[1] else
+             if (nrow(ledger_now()) > 0) "exante" else "manual"
+    if (identical(src, "exante")) {
+      upd <- store_ledger_updated()
+      return(tags$span(
+        class = "bdg ok",
+        title = paste0(
+          "Состав портфеля, средние цены и денежный остаток восстановлены из ",
+          "истории операций счёта Exante — поэтому их видно на любую дату, а ",
+          "не только на сегодня. Сверено со сводкой брокера: количества, ",
+          "средние цены и кэш совпадают. Реестр обновлён ",
+          if (is.null(upd)) "—" else format(upd, "%d.%m %H:%M"), "."),
+        "Счёт: ", tags$b("Exante")))
     }
+    tags$span(class = "bdg warn",
+              title = paste("Нет EXANTE_API_ID / EXANTE_SHARED_KEY —",
+                            "состав портфеля взят из списка, зашитого в коде.",
+                            "Он расходится с реальным счётом тем сильнее, чем",
+                            "дольше не обновлялся; кэш при этом неизвестен."),
+              "Позиции: ", tags$b("вручную"))
   })
 
   output$hd_forecast <- renderUI({
@@ -248,37 +292,77 @@ shinyServer(function(input, output, session) {
   # (исчерпан лимит кредитов, нет токена), об этом говорится прямо в шапке:
   # молчащий источник + нули в плитках читаются как «портфель обнулился».
   output$hd_updated <- renderUI({
-    m   <- portfolio_prices()
-    err <- md_status_text()
-    if (!is.null(err)) {
-      return(tags$span(class = "bdg warn",
-                       title = "Цены не получены, поэтому стоимость и рост показаны прочерком, а не нулём.",
-                       "Нет котировок: ", tags$b(err)))
+    m <- portfolio_prices()
+    st <- store_status()
+    # Бумаги, по которым цены на выбранную дату нет. Раньше здесь висел
+    # глобальный флаг ошибки источника, и одна не загруженная бумага делала
+    # вид, будто котировок нет вообще.
+    miss <- if (nrow(m) > 0) unique(m[quantity_at > 0 & !is.finite(price_at), ticker])
+            else character()
+    if (!isTRUE(st$ok)) {
+      return(tags$span(class = "bdg warn", title = paste(
+        "Ночная загрузка рядов ещё не отработала, поэтому цен нет и стоимость",
+        "показана прочерком, а не нулём."),
+        "Хранилище рядов ", tags$b("пусто")))
     }
-    d <- suppressWarnings(max(vapply(m$ticker, function(tk)
-      as.numeric(md_last_price_date(tk)), numeric(1)), na.rm = TRUE))
+    if (length(miss) > 0) {
+      return(tags$span(class = "bdg warn", title = paste0(
+        "По этим бумагам нет рядов в хранилище, поэтому стоимость и итоги ",
+        "показаны прочерком: сумма с пропуском врёт увереннее, чем прочерк. ",
+        "Добавьте их в реестр наблюдения и дождитесь ночной загрузки."),
+        "Нет цен: ", tags$b(paste(miss, collapse = ", "))))
+    }
+    d <- suppressWarnings(max(m[quantity_at > 0, as.numeric(session)], na.rm = TRUE))
     if (!is.finite(d)) {
-      return(tags$span(class = "bdg warn", "Котировки: ", tags$b("нет данных")))
+      return(tags$span(class = "bdg", "Котировки: ", tags$b("\u2014")))
     }
     last <- as.Date(d, origin = "1970-01-01")
     stale <- as.integer(Sys.Date() - last)
-    st <- store_status()
     tip <- paste0(
-      "Цены — закрытие последней дневной сессии из локального хранилища рядов. ",
+      "Цены — закрытие торговой сессии из локального хранилища рядов. ",
       "Обновляет его ночное задание Jenkins; стенд в marketdata.app не ходит, ",
       "потому что у аккаунта лимит 100 запросов в сутки. ",
       if (!is.null(st$updated_at))
         paste0("Последняя загрузка: ", format(st$updated_at, "%d.%m %H:%M"), ". ") else "",
       "Инструментов в хранилище: ", st$instruments, ".")
-    # Замороженный ряд неотличим от живого: файлы на месте, числа
-    # правдоподобные, просто даты кончились. Поэтому возраст выводится явно.
-    if (stale > 5L) {
+    if (stale > 5L && identical(sel_date(), fact_date())) {
       return(tags$span(class = "bdg warn", title = tip,
                        "Ряды устарели: ", tags$b(format(last, "%d.%m")),
                        sprintf(" (%d дн. назад)", stale)))
     }
     tags$span(class = "bdg", title = tip, "Котировки на ",
               tags$b(format(last, "%d.%m")), " (закрытие)")
+  })
+
+  # Сессии шкалы — та же ось, что у ползунка.
+  timeline_sessions <- reactive({
+    store_touch()
+    store_sessions_window(BLNR_TIMELINE_DAYS)
+  })
+
+  # Точки сделок на дорожке ползунка. Положение считается по индексу сессии,
+  # поэтому точка всегда стоит ровно над своим делением шкалы.
+  output$tl_events <- renderUI({
+    sess <- timeline_sessions()
+    ev <- ledger_events(ledger_now())
+    req(length(sess) > 1, nrow(ev) > 0)
+    ev <- ev[value_date >= min(sess) & value_date <= max(sess)]
+    if (nrow(ev) == 0) return(NULL)
+    # Несколько сделок одного дня — одна точка: иначе они лягут друг на друга.
+    day <- ev[, .(qty = sum(qty),
+                  what = paste(sprintf("%s %+g", exante_symbol_to_ticker(symbol), qty),
+                               collapse = ", ")),
+              by = value_date]
+    dots <- lapply(seq_len(nrow(day)), function(i) {
+      idx <- findInterval(day$value_date[i], sess)
+      left <- (idx - 1) / (length(sess) - 1) * 100
+      tags$i(
+        class = if (day$qty[i] >= 0) "buy" else "sell",
+        style = sprintf("left:%.4f%%", max(0, min(100, left))),
+        title = paste0(format(day$value_date[i], "%d.%m.%Y"), ": ", day$what[i])
+      )
+    })
+    do.call(tagList, dots)
   })
 
   # Правая часть полосы времени: выбранная сессия и отметка фактической даты.
@@ -313,12 +397,23 @@ shinyServer(function(input, output, session) {
     }
 
     tiles <- list(
-      kpi(fmt_money(s$current_value), "В бумагах на дату",
+      kpi(fmt_money(s$current_value), "В бумагах",
           sub = paste0(sel_lab, " \u00b7 позиций: ", s$positions),
-          tip = paste0("Стоимость бумаг по ценам закрытия ", sel_lab,
-                       ". Денежная часть счёта сюда не входит: остаток кэша ",
-                       "отдаёт только Exante API, он на стенде ещё не ",
-                       "подключён.")),
+          tip = paste0("Стоимость бумаг по ценам закрытия ", sel_lab, ".")),
+      kpi(fmt_money(s$cash), "Кэш",
+          sub = if (is.finite(s$cash)) "денежный остаток счёта" else "нет данных",
+          tip = paste0(
+            "Денежный остаток на ", sel_lab,
+            " — сумма всех движений по счёту по эту дату включительно ",
+            "(пополнения, сделки, комиссии, дивиденды, налоги). ",
+            "Считается из истории операций Exante, а не берётся «на сегодня»: ",
+            "сегодняшний кэш рядом с прошлой стоимостью бумаг дал бы итог, ",
+            "которого никогда не существовало.")),
+      kpi(fmt_money(s$total_value), "Итого по счёту",
+          sub = "бумаги + кэш",
+          tip = paste0("Бумаги плюс денежный остаток на ", sel_lab,
+                       ". Прочерк, если неизвестно хотя бы одно слагаемое: ",
+                       "сумма с пропуском врёт увереннее, чем прочерк.")),
       kpi(fmt_signed_money(s$day_pnl), "За сессию", tone_of(s$day_pnl),
           sub = fmt_pct(s$day_pct),
           tip = "Изменение стоимости бумаг за одну торговую сессию — «на момент»."),
@@ -467,16 +562,15 @@ shinyServer(function(input, output, session) {
       tags$tbody(rows),
       tags$tfoot(tags$tr(
         tags$td("Итого"), tags$td(), tags$td(), tags$td(),
-        tags$td(class = if (isTRUE(s$day_pct >= 0)) "pos" else "neg",
-                fmt_pct(s$day_pct)),
+        tags$td(class = tone_of(s$day_pct), fmt_pct(s$day_pct)),
         tags$td(fmt_money(s$current_value)), tags$td("100%"),
-        tags$td(class = if (s$growth_pct >= 0) "pos" else "neg", fmt_pct(s$growth_pct)),
-        tags$td(class = if (!is.null(vf) && vf$fact_pct >= 0) "pos" else "neg",
-                if (is.null(vf)) "—" else fmt_pct(vf$fact_pct)),
-        if (has_fc) tags$td(class = if (!is.null(vf) && vf$fcst_pct >= 0) "pos" else "neg",
-                            if (is.null(vf)) "—" else fmt_pct(vf$fcst_pct)),
-        if (has_fc) tags$td(class = if (!is.null(vf) && vf$dev_pp >= 0) "pos" else "neg",
-                            if (is.null(vf)) "—" else fmt_pp(vf$dev_pp))
+        tags$td(class = tone_of(s$growth_pct), fmt_pct(s$growth_pct)),
+        tags$td(class = if (is.null(vf)) "mut" else tone_of(vf$fact_pct),
+                if (is.null(vf)) "\u2014" else fmt_pct(vf$fact_pct)),
+        if (has_fc) tags$td(class = if (is.null(vf)) "mut" else tone_of(vf$fcst_pct),
+                            if (is.null(vf)) "\u2014" else fmt_pct(vf$fcst_pct)),
+        if (has_fc) tags$td(class = if (is.null(vf)) "mut" else tone_of(vf$dev_pp),
+                            if (is.null(vf)) "\u2014" else fmt_pp(vf$dev_pp))
       ))
     ))
   })
@@ -506,13 +600,16 @@ shinyServer(function(input, output, session) {
     )
 
     # Траектория цены по модели: прогноз хранится как накопленный процент от
-    # базы, поэтому цена = цена базы * (1 + прогноз/100). Обрезаем выбранной
-    # датой: на момент времени T мы не могли видеть будущее за T.
+    # базы, поэтому цена = цена базы * (1 + прогноз/100). Показываем её ЦЕЛИКОМ
+    # на горизонт вперёд, а не обрезаем выбранной датой: это не подсматривание
+    # будущего, а прогноз, выданный на базовую дату, — его и надо видеть рядом
+    # с фактом, чтобы понимать, куда модель вела.
     fd <- forecast_data()
     if (!is.null(fd) && nrow(fd) > 0 && tk %in% fd$ticker) {
       base_px <- md_close_on_date(tk, FORECAST_BASELINE_DATE)
       if (is.finite(base_px)) {
-        f <- fd[ticker == tk][date <= sel]
+        horizon <- max(cnd$date) + BLNR_FORECAST_HORIZON_DAYS
+        f <- fd[ticker == tk][date <= horizon]
         if (nrow(f) > 0) {
           p <- add_trace(p, data = f, x = ~date,
                          y = base_px * (1 + f$forecast_growth_pct / 100),
@@ -522,6 +619,26 @@ shinyServer(function(input, output, session) {
                                      dash = "dash"))
         }
       }
+    }
+
+    # Сделки по этой бумаге: где вошли и где вышли. Без них график — просто
+    # картинка цены, по которой не видно, что владелец с ней делал.
+    ev <- ledger_events(ledger_now())
+    ev <- ev[exante_symbol_to_ticker(symbol) == tk &
+             value_date >= min(cnd$date) & value_date <= max(cnd$date)]
+    if (nrow(ev) > 0) {
+      ev[, side := data.table::fifelse(qty >= 0, "покупка", "продажа")]
+      p <- add_trace(
+        p, data = ev, x = ~value_date, y = ~price, inherit = FALSE,
+        type = "scatter", mode = "markers", name = "сделки",
+        marker = list(
+          size = 11, symbol = "diamond",
+          color = ifelse(ev$qty >= 0, BLNR_COLORS$ok, BLNR_COLORS$bad),
+          line = list(color = "#fff", width = 1.5)),
+        hovertext = sprintf("%s %s %g \u00b7 $%s",
+                            format(ev$value_date, "%d.%m.%Y"), ev$side,
+                            abs(ev$qty), formatC(ev$price, format = "f", digits = 2)),
+        hoverinfo = "text")
     }
 
     shapes <- list(
@@ -563,16 +680,63 @@ shinyServer(function(input, output, session) {
     snaps[date <= sel_date()]
   })
 
+  # Динамика счёта по сессиям — из реестра операций, поэтому доступна сразу на
+  # всю историю, а не «когда накопятся снимки».
+  value_series <- reactive({
+    portfolio_value_series(ledger_now(), timeline_sessions())
+  })
+
   output$bot_panels <- renderUI({
+    items <- list()
+    if (nrow(value_series()) > 0) {
+      items <- c(items, list(panel(
+        "Динамика счёта",
+        sub = "бумаги, кэш, итого",
+        tip = paste0(
+          "Стоимость бумаг, денежный остаток и итог по счёту на каждую ",
+          "торговую сессию окна. Считается из истории операций Exante, а не ",
+          "из ежедневных снимков стенда: снимки начинаются со дня первого ",
+          "запуска, а история счёта известна целиком. Вертикальная линия — ",
+          "выбранная дата."),
+        body_class = "bd--plot",
+        plotlyOutput("chart_value", height = "100%")
+      )))
+    }
     n_days <- length(unique(snapshots_upto()$date))
-    # Меньше двух дней — рисовать нечего, и нижний ряд не занимает экран вовсе.
-    if (n_days < 2) return(NULL)
-    panel(
-      "Невязка во времени",
-      tip = paste0("Факт − модель, процентных пунктов, по дням. Снимок ",
-                   "пишется раз в день автоматически; лог: ", SNAPSHOT_LOG_PATH, "."),
-      body_class = "bd--plot",
-      plotlyOutput("chart_deviation", height = "100%")
+    if (n_days >= 2) {
+      items <- c(items, list(panel(
+        "Невязка во времени",
+        tip = paste0("Факт − модель, процентных пунктов, по дням. Снимок ",
+                     "пишется раз в день автоматически; лог: ", SNAPSHOT_LOG_PATH, "."),
+        body_class = "bd--plot",
+        plotlyOutput("chart_deviation", height = "100%")
+      )))
+    }
+    if (length(items) == 0) return(NULL)
+    do.call(tagList, items)
+  })
+
+  output$chart_value <- renderPlotly({
+    v <- value_series()
+    req(nrow(v) > 0)
+    sel <- sel_date()
+    p <- plot_ly(v, x = ~date, y = ~total, type = "scatter", mode = "lines",
+                 name = "итого",
+                 line = list(color = BLNR_COLORS$text, width = 2))
+    p <- add_trace(p, y = ~securities, name = "бумаги",
+                   line = list(color = BLNR_COLORS$ok, width = 1.4))
+    p <- add_trace(p, y = ~cash, name = "кэш",
+                   line = list(color = BLNR_COLORS$plan, width = 1.4,
+                               dash = "dot"))
+    blnr_plot_layout(
+      p,
+      legend = list(orientation = "h", x = 0, y = 1.16, font = list(size = 10)),
+      margin = list(l = 52, r = 10, t = 20, b = 26),
+      shapes = list(list(type = "line", xref = "x", yref = "paper",
+                         x0 = sel, x1 = sel, y0 = 0, y1 = 1,
+                         line = list(color = BLNR_COLORS$orange, width = 1.5))),
+      xaxis = list(title = "", gridcolor = BLNR_COLORS$grid),
+      yaxis = list(title = "", gridcolor = BLNR_COLORS$grid, tickprefix = "$")
     )
   })
 

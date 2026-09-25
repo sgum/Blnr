@@ -11,35 +11,50 @@
 # последняя цена по счёту); иначе используются данные из
 # portfolio_holdings (реальные цены исполнения ордеров) и текущая цена
 # заполняется позже котировкой с Yahoo (см. build_portfolio_metrics()).
-get_portfolio_positions <- function() {
-  if (exante_has_credentials()) {
-    accounts <- exante_get_accounts()
-    if (is.null(accounts$error) && length(accounts) > 0) {
-      # Поле счёта — accountId (не id). Берём первый счёт, где реально есть
-      # позиции: у пользователя несколько суб-счетов, и первый нередко пуст.
-      account_ids <- vapply(accounts, function(a) a$accountId %||% a$id %||% NA_character_,
-                            character(1))
-      account_ids <- account_ids[!is.na(account_ids)]
-      for (account_id in account_ids) {
-        positions <- exante_get_positions(account_id)
-        if (!is.null(positions$error)) next
-        dt <- exante_positions_to_dt(positions)
-        if (nrow(dt) > 0) {
-          dt[, ticker := exante_symbol_to_ticker(symbolId)]
-          dt[, source := "exante"]
-          data.table::setnames(dt,
-            c("averagePrice", "price"),
-            c("entry_price", "current_price")
-          )
-          # Даты покупки Exante в позициях не отдаёт — она приедет из истории
-          # сделок отдельным шагом. Пока её нет, позиция считается открытой на
-          # всём отрезке, и об этом сказано на экране.
-          dt[, purchase_date := as.Date(NA)]
-          return(dt[, .(ticker, quantity, entry_price, current_price,
-                        purchase_date, source)])
-        }
-      }
+# Реестр операций счёта. Берётся из локального хранилища; если его нет, а
+# креды Exante настроены — тянется из API и сохраняется. Так стенд работает и
+# на сервере без кред (на последнем сохранённом реестре, с его датой на
+# экране), и на машине с кредами.
+portfolio_ledger <- function(refresh = FALSE) {
+  if (!refresh && store_has_ledger()) return(store_read_ledger())
+  if (!exante_has_credentials()) return(empty_ledger())
+  acct <- exante_primary_account()
+  if (is.null(acct)) return(empty_ledger())
+  led <- exante_transactions_dt(acct)
+  if (!is.data.frame(led) || nrow(led) == 0) return(empty_ledger())
+  store_write_ledger(led)
+  led
+}
+
+# Позиции на дату. Основной путь — реестр операций: он даёт состав портфеля,
+# количество и среднюю цену на ЛЮБУЮ дату, а сводка Exante знает только
+# сегодняшний день, чего для ползунка времени недостаточно.
+# Сверено с боевым счётом 25.09.2026: количества и средние цены совпали со
+# сводкой брокера по всем позициям, расхождений ноль.
+#
+# Резервный путь — portfolio_holdings из global.R, когда реестра нет вовсе.
+# Он помечается source = "manual", и на экране об этом сказано: зашитый список
+# расходится с реальным счётом тем сильнее, чем дольше он не обновлялся.
+get_portfolio_positions <- function(as_of = Sys.Date(), ledger = portfolio_ledger()) {
+  if (nrow(ledger) > 0) {
+    pos <- ledger_positions_at(ledger, as_of)
+    pos <- pos[quantity > 0]
+    if (nrow(pos) > 0) {
+      return(data.table::data.table(
+        ticker        = pos$ticker,
+        quantity      = pos$quantity,
+        entry_price   = pos$avg_price,
+        current_price = NA_real_,
+        purchase_date = pos$first_date,
+        source        = "exante"
+      ))
     }
+    # Реестр есть, позиций на эту дату нет — это ответ, а не отсутствие данных.
+    return(data.table::data.table(
+      ticker = character(), quantity = numeric(), entry_price = numeric(),
+      current_price = numeric(), purchase_date = as.Date(character()),
+      source = character()
+    ))
   }
 
   dt <- data.table::copy(portfolio_holdings)
@@ -73,12 +88,31 @@ get_last_close <- function(ticker) {
 # (по умолчанию FORECAST_BASELINE_DATE, 11.09.2026), а не от цены покупки:
 # именно от этой даты считается прогноз в файле пользователя (см.
 # R/forecast.R), так что сравнивать факт с прогнозом нужно на одной базе.
-build_portfolio_metrics <- function(positions = get_portfolio_positions(),
-                                     as_of = Sys.Date(),
+build_portfolio_metrics <- function(as_of = Sys.Date(),
+                                     ledger = portfolio_ledger(),
+                                     positions = get_portfolio_positions(as_of, ledger),
                                      entry_date = min(portfolio_holdings$purchase_date),
                                      base_date = FORECAST_BASELINE_DATE) {
-  dt <- data.table::copy(positions)
   as_of <- as.Date(as_of)
+  dt <- data.table::copy(positions)
+  if (nrow(dt) == 0) {
+    # Позиций на эту дату нет. Возвращаем пустую таблицу нужной схемы, а не
+    # NULL: вызывающий код обязан отличать «портфеля не было» от «данные не
+    # пришли», и то и другое здесь выражается явно.
+    dt <- data.table::data.table(
+      ticker = character(), quantity = numeric(), entry_price = numeric(),
+      current_price = numeric(), purchase_date = as.Date(character()),
+      source = character(), price_at = numeric(), price_prev = numeric(),
+      session = as.Date(character()), held = logical(), quantity_at = numeric(),
+      base_price = numeric(), entry_value = numeric(), current_value = numeric(),
+      prev_value = numeric(), growth_pct = numeric(),
+      growth_from_base_pct = numeric(), day_change_pct = numeric(),
+      pnl = numeric(), weight_pct = numeric()
+    )
+    data.table::setattr(dt, "as_of", as_of)
+    data.table::setattr(dt, "cash", ledger_cash_at(ledger, as_of))
+    return(dt[])
+  }
 
   # Цена и предыдущая сессия на ВЫБРАННУЮ дату: «текущая» цена — это цена на
   # момент, который держит ползунок, а не обязательно последняя известная.
@@ -114,6 +148,10 @@ build_portfolio_metrics <- function(positions = get_portfolio_positions(),
   dt[, weight_pct := current_value / total_current * 100]
 
   data.table::setattr(dt, "as_of", as_of)
+  # Денежная часть счёта на ту же дату: итог портфеля — это бумаги ПЛЮС кэш,
+  # и брать кэш «на сегодня» рядом с прошлой стоимостью бумаг значит показать
+  # состояние, которого никогда не существовало.
+  data.table::setattr(dt, "cash", ledger_cash_at(ledger, as_of))
   dt[]
 }
 
@@ -126,6 +164,7 @@ build_portfolio_metrics <- function(positions = get_portfolio_positions(),
 # кредитов. Поэтому: нет цены хотя бы по одной позиции — итог NA, а интерфейс
 # обязан показать прочерк и причину.
 summarize_portfolio <- function(metrics) {
+  cash <- attr(metrics, "cash") %||% NA_real_
   held <- if ("quantity_at" %in% names(metrics)) metrics[quantity_at > 0] else metrics
   entry_value   <- sum(held$entry_value)
   current_value <- sum(held$current_value)
@@ -140,8 +179,66 @@ summarize_portfolio <- function(metrics) {
     # «На момент» — изменение за одну торговую сессию.
     day_pnl       = current_value - prev_value,
     day_pct       = (current_value / prev_value - 1) * 100,
+    cash          = cash,
+    # Итого по счёту: бумаги плюс денежный остаток. NA, если неизвестно хотя бы
+    # одно слагаемое — сумма с пропуском врёт увереннее, чем прочерк.
+    total_value   = current_value + cash,
     positions     = nrow(held),
     priced        = sum(is.finite(held$current_price)),
     total         = nrow(held)
+  )
+}
+
+# Динамика портфеля по сессиям: стоимость бумаг, денежный остаток и итог по
+# счёту на каждую торговую сессию окна.
+#
+# Считается из реестра операций, а не из снимков: снимки начинаются со дня,
+# когда стенд впервые запустили, а реестр знает всю историю счёта. Поэтому
+# кривая доступна сразу, а не «когда накопится».
+#
+# Способ. Количество бумаги на дату — накопительная сумма её событий по эту
+# дату; findInterval даёт индекс последнего события до сессии за один проход,
+# без цикла по датам. Цена — закрытие сессии из локального хранилища.
+portfolio_value_series <- function(ledger, sessions, currency = "USD") {
+  empty <- data.table::data.table(
+    date = as.Date(character()), securities = numeric(),
+    cash = numeric(), total = numeric()
+  )
+  if (nrow(ledger) == 0 || length(sessions) == 0) return(empty)
+  sessions <- sort(as.Date(sessions))
+
+  # Денежный остаток на каждую сессию.
+  cash_tx <- ledger[asset == currency, .(delta = sum(amount, na.rm = TRUE)),
+                    by = value_date]
+  data.table::setorder(cash_tx, value_date)
+  cash_tx[, cum := cumsum(delta)]
+  idx <- findInterval(sessions, cash_tx$value_date)
+  cash <- ifelse(idx == 0, 0, cash_tx$cum[pmax(idx, 1)])
+
+  # Стоимость бумаг: по каждой бумаге количество на сессию * цена закрытия.
+  ev <- ledger_events(ledger, currency)
+  securities <- rep(0, length(sessions))
+  for (sym in unique(ev$symbol)) {
+    e <- ev[symbol == sym]
+    data.table::setorder(e, value_date)
+    e <- e[, .(qty = sum(qty)), by = value_date]
+    e[, cum := cumsum(qty)]
+    j <- findInterval(sessions, e$value_date)
+    qty <- ifelse(j == 0, 0, e$cum[pmax(j, 1)])
+    if (all(abs(qty) < 1e-9)) next
+
+    cnd <- md_candles(exante_symbol_to_ticker(sym), days = length(sessions) + 400)
+    if (nrow(cnd) == 0) next
+    k <- findInterval(sessions, cnd$date)
+    px <- ifelse(k == 0, NA_real_, cnd$close[pmax(k, 1)])
+    contrib <- qty * px
+    # Нет цены — нет и слагаемого: подставлять ноль значит занижать портфель
+    # молча. Такие сессии станут NA в итоге, и на графике будет разрыв.
+    securities <- securities + ifelse(abs(qty) < 1e-9, 0, contrib)
+  }
+
+  data.table::data.table(
+    date = sessions, securities = securities, cash = cash,
+    total = securities + cash
   )
 }

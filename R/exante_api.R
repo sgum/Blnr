@@ -145,10 +145,21 @@ exante_get_last_quote <- function(symbol_id) {
   exante_get(sprintf("/md/2.0/feed/%s/last", symbol_id))
 }
 
-# Тикер из symbolId Exante: "NVDA.NASDAQ" -> "NVDA", "GS.NYSE" -> "GS".
-# Опционы вида "AMD.CBOE.20G2026.C220" сводятся к базовому тикеру "AMD".
+# Опцион ли это. У акции symbolId из двух частей ("GS.NYSE"), у опциона —
+# из четырёх ("AMD.CBOE.20G2026.C220").
+exante_is_option <- function(symbol_id) {
+  lengths(strsplit(as.character(symbol_id), ".", fixed = TRUE)) > 2L
+}
+
+# Базовый тикер инструмента: "NVDA.NASDAQ" -> "NVDA", "GS.NYSE" -> "GS".
+# Для ОПЦИОНА возвращается symbolId целиком, а не базовая бумага. Иначе
+# "AMD.CBOE.20G2026.C220" превратился бы в "AMD" и опционная позиция молча
+# слилась бы с акционной, а оценивалась бы по цене акции — числа остались бы
+# правдоподобными и стали бы неверными. На счёте владельца опционы торгуются
+# (найдены в истории 25.09.2026), так что это не гипотетический случай.
 exante_symbol_to_ticker <- function(symbol_id) {
-  sub("\\..*$", "", as.character(symbol_id))
+  sid <- as.character(symbol_id)
+  data.table::fifelse(exante_is_option(sid), sid, sub("\\..*$", "", sid))
 }
 
 # Преобразует список позиций Exante в data.table для отображения в таблице.
@@ -177,4 +188,63 @@ exante_positions_to_dt <- function(positions) {
   })
 
   data.table::rbindlist(rows, fill = TRUE)
+}
+
+# Транзакции счёта в виде таблицы реестра (см. R/ledger.R). Поля ответа
+# проверены на боевом счёте 25.09.2026: valueDate — дата зачисления,
+# `when` — миллисекунды, `sum` приходит строкой, `asset` различает денежную
+# ногу ("USD") и ногу инструмента (symbolId), transactionPrice — цена
+# исполнения, orderId связывает ноги одной сделки и её комиссию.
+exante_transactions_dt <- function(account_id, limit = 5000) {
+  tx <- exante_get_transactions(account_id, limit = limit)
+  if (!is.null(tx$error)) return(tx)
+  if (length(tx) == 0) return(empty_ledger())
+  out <- data.table::rbindlist(lapply(tx, function(t) {
+    data.table::data.table(
+      id         = as.integer(t$id %||% NA),
+      value_date = as.Date(t$valueDate %||% NA),
+      type       = as.character(t$operationType %||% ""),
+      symbol     = as.character(t$symbolId %||% ""),
+      asset      = as.character(t$asset %||% ""),
+      amount     = suppressWarnings(as.numeric(t$sum %||% NA)),
+      price      = suppressWarnings(as.numeric(t$transactionPrice %||% NA)),
+      order_id   = as.character(t$orderId %||% "")
+    )
+  }), fill = TRUE)
+  out <- out[!is.na(value_date)]
+  data.table::setorder(out, value_date, id)
+  out[]
+}
+
+# Денежный остаток и чистые активы счёта в валюте отчёта.
+exante_account_cash <- function(account_id, currency = "USD") {
+  s <- exante_get_account_summary(account_id, currency)
+  if (!is.null(s$error)) return(s)
+  cash <- NA_real_
+  for (c in s$currencies %||% list()) {
+    if (identical(c$code, currency)) cash <- as.numeric(c$convertedValue %||% c$value)
+  }
+  list(
+    cash  = cash,
+    nav   = as.numeric(s$netAssetValue %||% NA),
+    free  = as.numeric(s$freeMoney %||% NA),
+    currency = currency
+  )
+}
+
+# Счёт, на котором реально есть движение: у владельца несколько субсчетов, и
+# первый нередко пуст. Берём тот, где есть позиции или ненулевой остаток.
+exante_primary_account <- function() {
+  accounts <- exante_get_accounts()
+  if (!is.null(accounts$error) || length(accounts) == 0) return(NULL)
+  ids <- vapply(accounts, function(a) a$accountId %||% a$id %||% NA_character_,
+                character(1))
+  ids <- ids[!is.na(ids)]
+  for (id in ids) {
+    s <- exante_get_account_summary(id)
+    if (!is.null(s$error)) next
+    nav <- suppressWarnings(as.numeric(s$netAssetValue %||% 0))
+    if (length(s$positions %||% list()) > 0 || (is.finite(nav) && nav > 1)) return(id)
+  }
+  NULL
 }

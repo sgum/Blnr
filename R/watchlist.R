@@ -19,6 +19,12 @@
 # Если индексные данные появятся, вернуть их сюда вместе с выбором эндпоинта
 # в R/marketdata.R либо завести через ETF (SPY / DIA / QQQ).
 #
+# GOOGL добавлен отдельной строкой с пустым name_model: брокерский счёт держит
+# именно класс A (GOOGL.NASDAQ), а в модельном воркбуке строка «Google» одна и
+# сопоставлена с GOOG. Это РАЗНЫЕ бумаги с разной ценой, поэтому подменять
+# одну другой нельзя — прогноз по GOOGL останется пустым, пока в модели не
+# появится своя строка.
+#
 # `name_model` — подпись строки ровно как в Q_mean_var. Сопоставление
 # прогноза с тикером идёт ТОЧНЫМ совпадением по этому полю, а не поиском
 # подстроки: подстрочные алиасы уже давали ложные срабатывания («ge» ловил
@@ -27,17 +33,18 @@
 WATCHLIST <- data.table::data.table(
   ticker = c("AAPL", "NVDA", "MSFT", "TSLA", "GOOG", "AMZN", "AMD", "META",
              "NFLX", "INTC", "IBM", "GM", "GE", "BP", "SHEL", "CVX", "GS",
-             "MS", "JPM", "SAP", "F", "GLD", "USO"),
+             "MS", "JPM", "SAP", "F", "GLD", "USO", "GOOGL"),
   name_model = c("Apple", "Nvidia", "Microsoft", "Tesla", "Google", "Amazon",
                  "AMD", "Meta", "Netflix", "Intel", "IBM", "General Motors",
                  "General Electric", "BP", "Shell", "Chevron", "Goldman Sachs",
                  "Morgan Stanley Bank", "JPMorgan Chase & Co", "SAP", "Ford",
-                 "Gold", "Oil"),
+                 "Gold", "Oil", NA_character_),
   name_ru = c("Apple", "NVIDIA", "Microsoft", "Tesla", "Alphabet", "Amazon",
               "AMD", "Meta", "Netflix", "Intel", "IBM", "General Motors",
               "General Electric", "BP", "Shell", "Chevron", "Goldman Sachs",
               "Morgan Stanley", "JPMorgan Chase", "SAP", "Ford",
-              "Золото (ETF GLD)", "Нефть WTI (ETF USO)")
+              "Золото (ETF GLD)", "Нефть WTI (ETF USO)",
+              "Alphabet класс A")
 )
 
 # Глубина ретроспективы по умолчанию — 120 торговых дней: столько же берёт
@@ -48,6 +55,11 @@ WATCHLIST_RETRO_DAYS <- as.integer(Sys.getenv("BLNR_RETRO_DAYS", unset = "120"))
 # Длина шкалы времени на экране — сколько торговых сессий ретроспективы лежит
 # слева от фактической даты.
 BLNR_TIMELINE_DAYS <- as.integer(Sys.getenv("BLNR_TIMELINE_DAYS", unset = "150"))
+
+# Насколько далеко вперёд от последней свечи рисуется прогнозная кривая.
+# Горизонт модели — до 2028 года; целиком он сжал бы свечи в полоску.
+BLNR_FORECAST_HORIZON_DAYS <- as.integer(
+  Sys.getenv("BLNR_FORECAST_HORIZON_DAYS", unset = "45"))
 
 # Какие тикеры показывать и грузить. По умолчанию весь реестр; переменной
 # BLNR_WATCHLIST можно сузить ("GS,GE,AMD,GOOG,NVDA").

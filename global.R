@@ -48,9 +48,11 @@ source("R/watchlist.R")
 source("R/store.R")
 source("R/marketdata.R")
 source("R/exante_api.R")
+source("R/ledger.R")
 source("R/portfolio.R")
 source("R/forecast.R")
 source("R/auth_ad.R")
+source("R/export_xlsx.R")
 source("R/ui_kit.R")
 
 # Модули интерфейса — в глобальной области, т.к. dashboardUI()/loginUI() строятся

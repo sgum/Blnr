@@ -34,8 +34,9 @@ portfolio_holdings <- data.table(
 
 source("R/snapshots.R"); source("R/watchlist.R"); source("R/store.R")
 source("R/marketdata.R")
-source("R/exante_api.R"); source("R/portfolio.R"); source("R/forecast.R")
-source("R/auth_ad.R"); source("R/ui_kit.R")
+source("R/exante_api.R"); source("R/ledger.R")
+source("R/portfolio.R"); source("R/forecast.R")
+source("R/auth_ad.R"); source("R/export_xlsx.R"); source("R/ui_kit.R")
 
 FAILED <- 0L
 ok <- function(what, cond) {
@@ -92,7 +93,13 @@ ok("Gold -> GLD",               identical(ticker_by_model_name("Gold"), "GLD"))
 # прогноза по ним просто не сопоставляются и отбрасываются при разборе.
 ok("Nasdaq больше не сопоставляется", is.na(ticker_by_model_name("Nasdaq")))
 ok("неизвестное имя -> NA",     is.na(ticker_by_model_name("Неизвестная Компания")))
-ok("в реестре 23 инструмента", nrow(WATCHLIST) == 23)
+ok("в реестре 24 инструмента", nrow(WATCHLIST) == 24)
+# GOOGL и GOOG — разные бумаги с разной ценой. Счёт держит класс A, модель
+# знает только GOOG, поэтому подменять одну другой нельзя.
+ok("GOOGL и GOOG различаются",
+   all(c("GOOG", "GOOGL") %in% WATCHLIST$ticker))
+ok("у GOOGL нет строки модели",
+   is.na(WATCHLIST[ticker == "GOOGL", name_model]))
 ok("тикеры уникальны",          !any(duplicated(WATCHLIST$ticker)))
 ok("имена модели уникальны",    !any(duplicated(tolower(trimws(WATCHLIST$name_model)))))
 ok("индексов в реестре нет",
@@ -267,7 +274,7 @@ local({
     purchase_date = as.Date(c("2026-09-05", "2026-09-15")), source = "manual"
   )
 
-  m10 <- build_portfolio_metrics(holdings, as_of = as.Date("2026-09-10"))
+  m10 <- build_portfolio_metrics(positions = holdings, ledger = empty_ledger(), as_of = as.Date("2026-09-10"))
   s10 <- summarize_portfolio(m10)
   # 10.09 — пятая свеча после 05.09: close GS = 1009. GE куплена только 15.09.
   ok("цена берётся на выбранную дату, а не последняя",
@@ -276,7 +283,7 @@ local({
   ok("стоимость на дату по одной позиции",
      isTRUE(all.equal(s10$current_value, 5 * 1009)))
 
-  m18 <- build_portfolio_metrics(holdings, as_of = as.Date("2026-09-18"))
+  m18 <- build_portfolio_metrics(positions = holdings, ledger = empty_ledger(), as_of = as.Date("2026-09-18"))
   s18 <- summarize_portfolio(m18)
   ok("после второй покупки позиций две", s18$positions == 2)
   # Сравнивать итоги двух дат мало: они различаются и из-за второй покупки.
@@ -290,7 +297,7 @@ local({
   ok("итог за сессию суммирует только открытые позиции",
      isTRUE(all.equal(s18$day_pnl, 5 * (1017 - 1016) + 16 * (317 - 316))))
 
-  m01 <- build_portfolio_metrics(holdings, as_of = as.Date("2026-09-01"))
+  m01 <- build_portfolio_metrics(positions = holdings, ledger = empty_ledger(), as_of = as.Date("2026-09-01"))
   ok("до первой покупки позиций нет", summarize_portfolio(m01)$positions == 0)
 
   # Ось времени — только реальные торговые дни, и общие для всех бумаг.
@@ -304,7 +311,180 @@ local({
                as.Date("2026-09-10")))
 })
 
-cat("== 9. Сборка интерфейса ==\n")
+cat("== 9. Реестр операций счёта ==\n")
+# Реестр восстанавливает позиции, среднюю цену и кэш на ЛЮБУЮ дату. Сводка
+# брокера знает только сегодня, и с ползунком времени этого мало: сегодняшний
+# кэш рядом с прошлой стоимостью бумаг — состояние, которого не существовало.
+local({
+  # Схема как в ответе Exante: у сделки две ноги с общим orderId (инструмент
+  # и деньги), комиссия — отдельной строкой с тем же orderId.
+  leg <- function(i, d, type, sym, asset, amount, price = NA_real_, ord = "") {
+    data.table(id = i, value_date = as.Date(d), type = type, symbol = sym,
+               asset = asset, amount = amount, price = price, order_id = ord)
+  }
+  led <- rbindlist(list(
+    leg(1, "2026-01-10", "FUNDING/WITHDRAWAL", "", "USD", 10000),
+    leg(2, "2026-02-01", "TRADE", "AMD.NASDAQ", "AMD.NASDAQ",  10, 100, "o1"),
+    leg(3, "2026-02-01", "TRADE", "AMD.NASDAQ", "USD",      -1000, NA,  "o1"),
+    leg(4, "2026-02-01", "COMMISSION", "AMD.NASDAQ", "USD",     -5, NA,  "o1"),
+    leg(5, "2026-03-01", "TRADE", "AMD.NASDAQ", "AMD.NASDAQ",  10, 200, "o2"),
+    leg(6, "2026-03-01", "TRADE", "AMD.NASDAQ", "USD",      -2000, NA,  "o2"),
+    leg(7, "2026-04-01", "TRADE", "AMD.NASDAQ", "AMD.NASDAQ", -10, 300, "o3"),
+    leg(8, "2026-04-01", "TRADE", "AMD.NASDAQ", "USD",       3000, NA,  "o3"),
+    # валютная конвертация: не бумага, в позиции попасть не должна
+    leg(9, "2026-04-02", "AUTOCONVERSION", "", "EUR/USD",   -500, NA),
+    leg(10, "2026-04-02", "AUTOCONVERSION", "", "USD",        540, NA)
+  ))
+
+  ok("кэш на дату считается по эту дату включительно",
+     isTRUE(all.equal(ledger_cash_at(led, as.Date("2026-02-01")), 10000 - 1000 - 5)))
+  ok("более поздние движения в кэш на дату не попадают",
+     isTRUE(all.equal(ledger_cash_at(led, as.Date("2026-01-31")), 10000)))
+  ok("кэш на конец учитывает всё",
+     isTRUE(all.equal(ledger_cash_at(led), 10000 - 1000 - 5 - 2000 + 3000 + 540)))
+
+  p1 <- ledger_positions_at(led, as.Date("2026-02-15"))
+  ok("после первой покупки 10 штук", isTRUE(all.equal(p1[ticker == "AMD", quantity], 10)))
+  # Комиссия в среднюю цену НЕ входит: Exante считает averagePrice без неё,
+  # и расхождение со сводкой читалось бы как ошибка реестра.
+  ok("средняя цена без комиссии", isTRUE(all.equal(p1[ticker == "AMD", avg_price], 100)))
+
+  p2 <- ledger_positions_at(led, as.Date("2026-03-15"))
+  ok("докупка усредняет цену", isTRUE(all.equal(p2[ticker == "AMD", avg_price], 150)))
+
+  # Продажа половины лота: количество падает, а средняя цена остаётся —
+  # стоимость уменьшается пропорционально, а не «запоминает» закрытый лот.
+  p3 <- ledger_positions_at(led, as.Date("2026-04-15"))
+  ok("после продажи половины осталось 10", isTRUE(all.equal(p3[ticker == "AMD", quantity], 10)))
+  ok("средняя цена после продажи не изменилась",
+     isTRUE(all.equal(p3[ticker == "AMD", avg_price], 150)))
+
+  ok("валютная конвертация не стала позицией", !("EUR/USD" %in% p3$symbol))
+  ok("до первой сделки позиций нет",
+     nrow(ledger_positions_at(led, as.Date("2026-01-20"))) == 0)
+
+  # Опцион НЕ должен сливаться с акцией: базовый тикер у них общий, и при
+  # наивном сокращении опционная позиция оценивалась бы по цене акции.
+  ok("опцион распознаётся по числу частей symbolId",
+     identical(exante_is_option(c("AMD.NASDAQ", "AMD.CBOE.20G2026.C220")),
+               c(FALSE, TRUE)))
+  ok("акция сводится к тикеру",
+     identical(exante_symbol_to_ticker("AMD.NASDAQ"), "AMD"))
+  ok("опцион НЕ сводится к базовой бумаге",
+     identical(exante_symbol_to_ticker("AMD.CBOE.20G2026.C220"),
+               "AMD.CBOE.20G2026.C220"))
+  led_opt <- rbindlist(list(
+    led,
+    leg(20, "2026-05-01", "TRADE", "AMD.CBOE.20G2026.C220",
+        "AMD.CBOE.20G2026.C220", 2, 30, "o9"),
+    leg(21, "2026-05-01", "TRADE", "AMD.CBOE.20G2026.C220", "USD", -6000, NA, "o9")
+  ))
+  po <- ledger_positions_at(led_opt, as.Date("2026-05-15"))
+  ok("опцион стал отдельной позицией, а не прибавкой к акции",
+     nrow(po[ticker == "AMD"]) == 1 && nrow(po[ticker == "AMD.CBOE.20G2026.C220"]) == 1)
+  ok("количество акции не выросло от опциона",
+     isTRUE(all.equal(po[ticker == "AMD", quantity], 10)))
+
+  # Сверка со сводкой брокера обязана ЗАМЕЧАТЬ расхождение, иначе она
+  # бесполезна: реестр, тихо разошедшийся с брокером, даёт правдоподобные
+  # и неверные числа.
+  api_ok  <- data.table(symbol = "AMD.NASDAQ", quantity = 10)
+  api_bad <- data.table(symbol = "AMD.NASDAQ", quantity = 12)
+  cash_now <- ledger_cash_at(led)
+  ok("сверка молчит на совпадении",
+     length(ledger_reconcile(led, api_ok, cash_now)) == 0)
+  ok("сверка ловит расхождение по количеству",
+     any(grepl("AMD", ledger_reconcile(led, api_bad, cash_now))))
+  ok("сверка ловит расхождение по кэшу",
+     any(grepl("кэш", ledger_reconcile(led, api_ok, cash_now + 100))))
+
+  # Портфель целиком на дату: позиции из реестра плюс кэш на ту же дату.
+  tmpstore <- file.path(tempdir(), paste0("led_", as.integer(runif(1, 1e6, 9e6))))
+  old_dir <- BLNR_STORE_DIR; BLNR_STORE_DIR <<- tmpstore
+  on.exit({ BLNR_STORE_DIR <<- old_dir; unlink(tmpstore, recursive = TRUE) }, add = TRUE)
+  store_write_candles("AMD", data.table(
+    date = seq(as.Date("2026-01-01"), by = "day", length.out = 120),
+    open = 1, high = 2, low = 0.5,
+    close = as.numeric(seq(100, 219)), volume = NA_real_))
+  m <- build_portfolio_metrics(as_of = as.Date("2026-03-15"), ledger = led)
+  sm <- summarize_portfolio(m)
+  ok("кэш приезжает вместе с метриками",
+     isTRUE(all.equal(sm$cash, ledger_cash_at(led, as.Date("2026-03-15")))))
+  ok("итого = бумаги + кэш",
+     isTRUE(all.equal(sm$total_value, sm$current_value + sm$cash)))
+  ok("позиции взяты из реестра, а не из зашитого списка",
+     identical(sort(unique(m$ticker)), "AMD"))
+
+  # Реестр есть, но на эту дату позиций нет — это ОТВЕТ, а не отсутствие
+  # данных: кэш при этом известен и показывается.
+  m0 <- build_portfolio_metrics(as_of = as.Date("2026-01-20"), ledger = led)
+  s0 <- summarize_portfolio(m0)
+  ok("портфель до первой сделки пуст, но кэш известен",
+     s0$positions == 0 && isTRUE(all.equal(s0$cash, 10000)))
+})
+
+cat("== 10. Выгрузка в типовом формате мониторинга ==\n")
+# Формат разобран по эталону владельца («OptionActual <дата>.xlsx»). Проверка
+# держит его строение: если лист «Реестр» переедет или у листа инструмента
+# сдвинется блок данных, файл перестанет открываться рабочими формулами —
+# а по самому файлу это не видно, он выглядит целым.
+local({
+  ser <- function(tk) data.table(
+    date = seq(as.Date("2026-06-01"), by = "day", length.out = 30),
+    open = 1, high = 2, low = 0.5,
+    close = as.numeric(seq(100, 129)), volume = 1000
+  )
+  wb <- build_monitoring_workbook(tickers = c("AAPL", "NVDA"), days = 30,
+                                  series_fn = ser)
+  f <- tempfile(fileext = ".xlsx")
+  openxlsx::saveWorkbook(wb, f, overwrite = TRUE)
+  on.exit(unlink(f), add = TRUE)
+
+  # Порядок листов проверяем В ФАЙЛЕ: names(wb) отдаёт порядок СОЗДАНИЯ, а не
+  # тот, в котором листы лягут в книгу (его задаёт worksheetOrder). Проверка по
+  # names() краснела на исправном файле — мерила не то.
+  sheets <- openxlsx::getSheetNames(f)
+  ok("первый лист — Реестр", identical(sheets[1], "Реестр"))
+  ok("есть сводный лист СборкаАкции", "СборкаАкции" %in% sheets)
+  ok("лист на каждый инструмент, нумерация с 2",
+     all(c("2", "3") %in% sheets))
+
+  reg <- openxlsx::read.xlsx(f, sheet = "Реестр", colNames = FALSE, rows = 1:3)
+  ok("шапка реестра как в эталоне",
+     identical(as.character(unlist(reg[1, 1:4])),
+               c("Имя листа", "Тикер", "Имя Компании", "OPTONCHAIN")))
+  ok("в реестре строка на инструмент",
+     identical(as.character(reg[2, 2]), "AAPL"))
+
+  sh <- openxlsx::read.xlsx(f, sheet = "2", colNames = FALSE, rows = 1:5)
+  ok("на листе инструмента шапка в строке 1, значения в строке 2",
+     identical(as.character(sh[1, 1]), "Имя листа") &&
+     identical(as.character(sh[2, 2]), "AAPL"))
+  ok("заголовки данных в строке 3",
+     identical(as.character(unlist(sh[3, 1:6])),
+               c("Date", "Open", "High", "Low", "Close", "Volume")))
+  ok("данные начинаются со строки 4", !is.na(sh[4, 5]))
+
+  comb <- openxlsx::read.xlsx(f, sheet = "СборкаАкции", detectDates = TRUE)
+  ok("в сводном листе все инструменты", nrow(comb) == 60)
+  ok("в сводном листе колонка Symbol",
+     "Symbol" %in% names(comb) && identical(sort(unique(comb$Symbol)), c("AAPL", "NVDA")))
+  ok("даты записаны датами, а не текстом", inherits(comb$Date, "Date"))
+
+  # Инструмент без ряда попадает в реестр со статусом, но своего листа НЕ
+  # получает: пустой лист с заголовками читается как данные, которых нет.
+  wb2 <- build_monitoring_workbook(
+    tickers = c("AAPL", "NVDA"), days = 30,
+    series_fn = function(tk) if (tk == "NVDA") empty_candles() else ser(tk))
+  f2 <- tempfile(fileext = ".xlsx"); openxlsx::saveWorkbook(wb2, f2, overwrite = TRUE)
+  on.exit(unlink(f2), add = TRUE)
+  ok("у инструмента без данных листа нет", !("3" %in% openxlsx::getSheetNames(f2)))
+  reg2 <- openxlsx::read.xlsx(f2, sheet = "Реестр", colNames = FALSE, rows = 1:3)
+  ok("но в реестре он есть со статусом «нет данных»",
+     any(grepl("нет данных", as.character(unlist(reg2)))))
+})
+
+cat("== 11. Сборка интерфейса ==\n")
 # Гейт против класса дефектов «экран не собрался», который до выкладки ничем
 # не виден: перекрытые имена функций (jsonlite::validate поверх shiny::validate,
 # httr::config поверх plotly::config), пакет, нужный при СБОРКЕ UI, но

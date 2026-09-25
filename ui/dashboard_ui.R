@@ -77,7 +77,16 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
   background:var(--surface);border-bottom:1px solid var(--border)}
 .tl .lab{display:flex;align-items:center;font-size:11px;color:var(--dim);
   font-weight:700;white-space:nowrap;flex:none}
-.tl .sld{flex:1 1 auto;min-width:0}
+.tl .sld{flex:1 1 auto;min-width:0;position:relative}
+/* Точки сделок поверх дорожки ползунка. Слой не перехватывает мышь целиком —
+   только сами точки, иначе по нему нельзя было бы двигать ползунок. */
+.tl-ev{position:absolute;left:0;right:0;top:20px;height:0;z-index:4;
+  pointer-events:none}
+.tl-ev i{position:absolute;top:0;width:8px;height:8px;border-radius:50%;
+  transform:translateX(-50%);border:1.5px solid #fff;pointer-events:auto;
+  cursor:help;box-shadow:0 0 0 1px rgba(31,36,48,.18)}
+.tl-ev i.buy{background:var(--ok)}
+.tl-ev i.sell{background:var(--bad)}
 .tl .val{font-weight:800;font-size:14px;white-space:nowrap;flex:none}
 /* ionRangeSlider: прижимаем по высоте и красим в фирменный оранжевый.
    Селекторы БЕЗ имени скина (.irs--flat / .irs--shiny): скин задаётся
@@ -231,8 +240,14 @@ timelineUI <- function() {
                 "Выходных и праздников на шкале нет: в эти дни цены не ",
                 "существует, и показывать портфель было бы не из чего. ",
                 "Позиция, купленная позже выбранной даты, в расчёт не ",
-                "попадает — портфеля на тот момент ещё не было."))),
+                "попадает — портфеля на тот момент ещё не было. ",
+                "Точками на шкале отмечены сделки по счёту: зелёная — ",
+                "покупка, красная — продажа; наведите на точку, чтобы ",
+                "увидеть бумагу и объём."))),
     tags$div(class = "sld",
+             # Слой точек лежит НАД дорожкой: события счёта видно прямо на
+             # шкале, без отдельного виджета и без текста на экране.
+             tags$div(class = "tl-ev", uiOutput("tl_events", inline = TRUE)),
              shinyWidgets::sliderTextInput(
                "as_of", label = NULL, choices = labels,
                selected = utils::tail(labels, 1),
@@ -259,7 +274,8 @@ dashboardUI <- function() {
         tags$div(
           class = "seg",
           actionButton("portfolio_refresh", "Обновить"),
-          actionButton("open_forecast", "Прогноз…")
+          actionButton("open_forecast", "Прогноз…"),
+          downloadButton("export_xlsx", "Excel", class = "dl")
         ),
         uiOutput("logout_ui", inline = TRUE)
       ),
