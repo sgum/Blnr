@@ -158,19 +158,32 @@ if (!inherits(ui_render, "condition")) {
                 function(tk) grepl(sprintf(">%s · |>%s · ", tk, tk),
                                    ui_render$dash), logical(1))) >= 20)
   # Пояснения живут под «i» (конституция): виджета, содержимого которого —
-  # только текст-подсказка, на экране быть не должно.
-  ok("подсказки оформлены как data-tip под «i»",
-     grepl("class=\"itip\"", ui_render$dash, fixed = TRUE) &&
-     grepl("data-tip=", ui_render$dash, fixed = TRUE))
-  # Панель обрезает всплывающую подсказку, если ей вернуть overflow:hidden.
-  ok("панель не обрезает всплывающую подсказку",
-     !grepl("\\.panel\\{[^}]*overflow:hidden", ui_render$dash))
+  # только текст-подсказка, на экране быть не должно. Разметка — как на
+  # portfolio.dtwin.ru: вложенный .tip, а не ::after.
+  ok("подсказки оформлены вложенным .tip под «i»",
+     grepl("class=\"ii ", ui_render$dash, fixed = TRUE) &&
+     grepl("class=\"tip\"", ui_render$dash, fixed = TRUE))
+  # Подсказка шириной 360px без привязки к краю уезжает за границу экрана и
+  # обрезается. Каждый значок обязан нести класс края — «ii» без него значит,
+  # что кто-то добавил подсказку и про край не подумал.
+  ok("у каждой подсказки задан край привязки",
+     !grepl("class=\"ii\"", ui_render$dash, fixed = TRUE) &&
+     grepl("\\.ii\\.l \\.tip\\{", ui_render$dash) &&
+     grepl("\\.ii\\.r \\.tip\\{", ui_render$dash))
+  # Карточка обрезает всплывающую подсказку, если ей вернуть overflow:hidden.
+  ok("карточка не обрезает всплывающую подсказку",
+     !grepl("\\.card\\{[^}]*overflow:hidden", ui_render$dash))
+  # Оформление берётся с portfolio.dtwin.ru: оранжевый — тонкой линейкой под
+  # шапкой страницы и заголовком карточки, а не заливкой.
+  ok("шапка и заголовки карточек с оранжевой линейкой",
+     grepl("\\.hdr\\{[^}]*border-bottom:3px solid var\\(--orange\\)", ui_render$dash) &&
+     grepl("\\.ch\\{[^}]*border-bottom:2px solid var\\(--orange\\)", ui_render$dash))
   # display:contents убирает обёртку uiOutput из РАСКЛАДКИ, но не из дерева
   # для селекторов: правило через `>` к панели внутри неё не применяется
   # (высота нижнего ряда молча терялась, и он распирал экран).
   ok("высота нижнего ряда задана селектором потомка",
-     grepl("\\.blnr-row--bot \\.panel\\{height", ui_render$dash) &&
-     !grepl("\\.blnr-row--bot>\\.panel\\{height", ui_render$dash))
+     grepl("\\.blnr-row--bot \\.card\\{height", ui_render$dash) &&
+     !grepl("\\.blnr-row--bot>\\.card\\{height", ui_render$dash))
 }
 
 cat(sprintf("\nИтог: %s\n", if (FAILED == 0L) "все проверки пройдены" else sprintf("ПРОВАЛОВ: %d", FAILED)))

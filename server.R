@@ -194,9 +194,9 @@ shinyServer(function(input, output, session) {
 
   output$hd_source <- renderUI({
     if (exante_has_credentials()) {
-      tags$span(class = "chip", "Источник: ", tags$b("Exante API"))
+      tags$span(class = "bdg", "Источник: ", tags$b("Exante API"))
     } else {
-      tags$span(class = "chip chip--warn",
+      tags$span(class = "bdg warn",
                 title = paste("Нет EXANTE_API_ID / EXANTE_SHARED_KEY —",
                               "позиции взяты из портфеля, заданного вручную.",
                               "Цены при этом живые (marketdata.app)."),
@@ -207,9 +207,9 @@ shinyServer(function(input, output, session) {
   output$hd_forecast <- renderUI({
     fd <- forecast_data()
     if (is.null(fd) || nrow(fd) == 0) {
-      return(tags$span(class = "chip chip--warn", "Прогноз ", tags$b("не загружен")))
+      return(tags$span(class = "bdg warn", "Прогноз ", tags$b("не загружен")))
     }
-    tags$span(class = "chip",
+    tags$span(class = "bdg",
               title = sprintf("%s. База отсчёта %s, горизонт до %s.",
                               forecast_source(),
                               format(FORECAST_BASELINE_DATE, "%d.%m.%Y"),
@@ -219,7 +219,7 @@ shinyServer(function(input, output, session) {
 
   output$hd_updated <- renderUI({
     ts <- attr(portfolio_prices(), "as_of")
-    tags$span(class = "chip", "Котировки: ",
+    tags$span(class = "bdg", "Котировки: ",
               tags$b(if (is.null(ts)) "—" else format(ts, "%H:%M:%S")))
   })
 
@@ -236,6 +236,8 @@ shinyServer(function(input, output, session) {
     if (!is.null(vf)) {
       tiles <- c(tiles, list(
         kpi(fmt_pp(vf$dev_pp), "Портфель против модели", tone_of(vf$dev_pp),
+            # плитка крайняя справа — подсказку прижимаем к правому краю
+            tip_align = "r",
             tip = sprintf(paste("Стоимость портфеля от базы %s: факт %s, модель %s.",
                                 "Положительное значение — портфель идёт быстрее модели.",
                                 "Считается по стоимости, то есть с учётом веса позиций."),
@@ -273,7 +275,7 @@ shinyServer(function(input, output, session) {
         "сравнимы напрямую. Δ = факт − модель в процентных пунктах, ",
         "плюс означает, что бумага идёт быстрее модели. ",
         "Клик по строке открывает её график справа."),
-      body_class = "panel-body--flush",
+      body_class = "bd--flush",
       uiOutput("pos_table")
     )
     if (!has_fc) {
@@ -287,7 +289,7 @@ shinyServer(function(input, output, session) {
         tip = paste0("По каждой бумаге: фактический рост от ", base_lab,
                      " рядом с прогнозом модели на сегодня. Расхождение ",
                      "столбиков и есть повод для решения по позиции."),
-        body_class = "panel-body--plot",
+        body_class = "bd--plot",
         plotlyOutput("chart_vs_forecast", height = "100%")
       )
     )
@@ -300,28 +302,27 @@ shinyServer(function(input, output, session) {
     has_fc <- any(is.finite(m$forecast_pct))
 
     num <- function(x, f) {
-      tags$td(class = if (!is.finite(x)) "na" else if (x >= 0) "up" else "down", f(x))
+      tags$td(class = if (!is.finite(x)) "mut" else if (x >= 0) "pos" else "neg", f(x))
     }
     plain <- function(x, digits = 2) {
-      tags$td(class = if (is.finite(x)) NULL else "na",
+      tags$td(class = if (is.finite(x)) NULL else "mut",
               if (is.finite(x)) formatC(x, format = "f", digits = digits, big.mark = " ") else "—")
     }
 
     rows <- lapply(seq_len(nrow(m)), function(i) {
       r <- m[i]
       tags$tr(
-        class = if (identical(r$ticker, sel)) "is-sel" else NULL,
+        class = if (identical(r$ticker, sel)) "sel" else NULL,
         onclick = sprintf("Shiny.setInputValue('pick_ticker','%s',{priority:'event'})", r$ticker),
-        tags$td(tags$span(class = "tk", r$ticker)),
+        tags$td(class = "nm", r$ticker),
         tags$td(formatC(r$quantity, format = "d")),
         plain(r$entry_price), plain(r$current_price),
         plain(r$current_value, 0),
         # Вес — числом и заливкой ячейки: отдельная карточка «Структура
         # портфеля» ради тех же пяти чисел заняла бы полосу экрана.
         tags$td(
-          class = "wcell",
           style = sprintf(
-            "background:linear-gradient(to left,#E3F0F5 %1$.1f%%,transparent %1$.1f%%)",
+            "background:linear-gradient(to left,#ffeccc %1$.1f%%,transparent %1$.1f%%)",
             max(0, min(100, r$weight_pct))),
           formatC(r$weight_pct, format = "f", digits = 1), "%"),
         num(r$growth_pct, fmt_pct),
@@ -335,8 +336,7 @@ shinyServer(function(input, output, session) {
     vf <- portfolio_vs_forecast()
     base_lab <- format(FORECAST_BASELINE_DATE, "%d.%m")
 
-    tags$table(
-      class = "pos",
+    tags$div(class = "rk", tags$table(
       tags$thead(tags$tr(
         tags$th("Тикер"), tags$th("Кол-во"), tags$th("Вход"), tags$th("Тек."),
         tags$th("Стоимость"), tags$th("Вес"), tags$th("От покупки"),
@@ -348,15 +348,15 @@ shinyServer(function(input, output, session) {
       tags$tfoot(tags$tr(
         tags$td("Итого"), tags$td(), tags$td(), tags$td(),
         tags$td(fmt_money(s$current_value)), tags$td("100%"),
-        tags$td(class = if (s$growth_pct >= 0) "up" else "down", fmt_pct(s$growth_pct)),
-        tags$td(class = if (!is.null(vf) && vf$fact_pct >= 0) "up" else "down",
+        tags$td(class = if (s$growth_pct >= 0) "pos" else "neg", fmt_pct(s$growth_pct)),
+        tags$td(class = if (!is.null(vf) && vf$fact_pct >= 0) "pos" else "neg",
                 if (is.null(vf)) "—" else fmt_pct(vf$fact_pct)),
-        if (has_fc) tags$td(class = if (!is.null(vf) && vf$fcst_pct >= 0) "up" else "down",
+        if (has_fc) tags$td(class = if (!is.null(vf) && vf$fcst_pct >= 0) "pos" else "neg",
                             if (is.null(vf)) "—" else fmt_pct(vf$fcst_pct)),
-        if (has_fc) tags$td(class = if (!is.null(vf) && vf$dev_pp >= 0) "up" else "down",
+        if (has_fc) tags$td(class = if (!is.null(vf) && vf$dev_pp >= 0) "pos" else "neg",
                             if (is.null(vf)) "—" else fmt_pp(vf$dev_pp))
       ))
-    )
+    ))
   })
 
   # График инструмента ####
@@ -372,10 +372,10 @@ shinyServer(function(input, output, session) {
     p <- plot_ly(
       cnd, x = ~date, type = "candlestick",
       open = ~open, high = ~high, low = ~low, close = ~close, name = tk,
-      increasing = list(line = list(color = BLNR_COLORS$up, width = 1),
-                        fillcolor = BLNR_COLORS$up),
-      decreasing = list(line = list(color = BLNR_COLORS$down, width = 1),
-                        fillcolor = BLNR_COLORS$down),
+      increasing = list(line = list(color = BLNR_COLORS$ok, width = 1),
+                        fillcolor = BLNR_COLORS$ok),
+      decreasing = list(line = list(color = BLNR_COLORS$bad, width = 1),
+                        fillcolor = BLNR_COLORS$bad),
       hoverinfo = "x+y"
     )
 
@@ -393,7 +393,7 @@ shinyServer(function(input, output, session) {
                          y = base_px * (1 + f$forecast_growth_pct / 100),
                          type = "scatter", mode = "lines", inherit = FALSE,
                          name = "модель",
-                         line = list(color = BLNR_COLORS$accent, width = 1.6,
+                         line = list(color = BLNR_COLORS$series, width = 1.6,
                                      dash = "dash"))
         }
       }
@@ -407,7 +407,7 @@ shinyServer(function(input, output, session) {
       if (is.finite(ep)) {
         shapes <- list(list(type = "line", xref = "paper", x0 = 0, x1 = 1,
                             y0 = ep, y1 = ep,
-                            line = list(color = BLNR_COLORS$mute, width = 1,
+                            line = list(color = BLNR_COLORS$plan, width = 1,
                                         dash = "dot")))
       }
     }
@@ -417,8 +417,8 @@ shinyServer(function(input, output, session) {
       showlegend = FALSE,
       shapes = shapes,
       xaxis = list(title = "", rangeslider = list(visible = FALSE),
-                   gridcolor = "#F0EFED"),
-      yaxis = list(title = "", gridcolor = "#F0EFED", tickprefix = "$")
+                   gridcolor = "#eceff3"),
+      yaxis = list(title = "", gridcolor = "#eceff3", tickprefix = "$")
     )
   })
 
@@ -434,7 +434,7 @@ shinyServer(function(input, output, session) {
       "Невязка во времени",
       tip = paste0("Факт − модель, процентных пунктов, по дням. Снимок ",
                    "пишется раз в день автоматически; лог: ", SNAPSHOT_LOG_PATH, "."),
-      body_class = "panel-body--plot",
+      body_class = "bd--plot",
       plotlyOutput("chart_deviation", height = "100%")
     )
   })
@@ -445,14 +445,14 @@ shinyServer(function(input, output, session) {
     blnr_plot_layout(
       add_trace(
         plot_ly(m, x = ~ticker, y = ~growth_from_base_pct, type = "bar",
-                name = "факт", marker = list(color = BLNR_COLORS$up)),
+                name = "факт", marker = list(color = BLNR_COLORS$ok)),
         y = ~forecast_pct, name = "модель",
-        marker = list(color = BLNR_COLORS$mute)),
+        marker = list(color = BLNR_COLORS$plan)),
       barmode = "group",
       legend = list(orientation = "h", x = 0, y = 1.14, font = list(size = 10)),
       margin = list(l = 40, r = 10, t = 20, b = 26),
       xaxis = list(title = ""),
-      yaxis = list(title = "", ticksuffix = "%", gridcolor = "#F0EFED")
+      yaxis = list(title = "", ticksuffix = "%", gridcolor = "#eceff3")
     )
   })
 
@@ -476,7 +476,7 @@ shinyServer(function(input, output, session) {
       # время до долей секунды.
       xaxis = list(title = "", type = "category",
                    categoryorder = "array", categoryarray = days),
-      yaxis = list(title = "", ticksuffix = " пп", gridcolor = "#F0EFED")
+      yaxis = list(title = "", ticksuffix = " пп", gridcolor = "#eceff3")
     )
   })
 })
