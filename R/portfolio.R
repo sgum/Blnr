@@ -31,7 +31,12 @@ get_portfolio_positions <- function() {
             c("averagePrice", "price"),
             c("entry_price", "current_price")
           )
-          return(dt[, .(ticker, quantity, entry_price, current_price, source)])
+          # Даты покупки Exante в позициях не отдаёт — она приедет из истории
+          # сделок отдельным шагом. Пока её нет, позиция считается открытой на
+          # всём отрезке, и об этом сказано на экране.
+          dt[, purchase_date := as.Date(NA)]
+          return(dt[, .(ticker, quantity, entry_price, current_price,
+                        purchase_date, source)])
         }
       }
     }
@@ -40,7 +45,7 @@ get_portfolio_positions <- function() {
   dt <- data.table::copy(portfolio_holdings)
   dt[, current_price := NA_real_]
   dt[, source := "manual"]
-  dt[, .(ticker, quantity, entry_price, current_price, source)]
+  dt[, .(ticker, quantity, entry_price, current_price, purchase_date, source)]
 }
 
 # Источник котировок — marketdata.app (R/marketdata.R), НЕ Yahoo.
@@ -69,23 +74,46 @@ get_last_close <- function(ticker) {
 # именно от этой даты считается прогноз в файле пользователя (см.
 # R/forecast.R), так что сравнивать факт с прогнозом нужно на одной базе.
 build_portfolio_metrics <- function(positions = get_portfolio_positions(),
+                                     as_of = Sys.Date(),
                                      entry_date = min(portfolio_holdings$purchase_date),
                                      base_date = FORECAST_BASELINE_DATE) {
   dt <- data.table::copy(positions)
+  as_of <- as.Date(as_of)
 
-  dt[is.na(entry_price),   entry_price   := sapply(ticker, get_close_on_date, date = entry_date)]
-  dt[is.na(current_price), current_price := sapply(ticker, get_last_close)]
-  dt[, base_price := sapply(ticker, get_close_on_date, date = base_date)]
+  # Цена и предыдущая сессия на ВЫБРАННУЮ дату: «текущая» цена — это цена на
+  # момент, который держит ползунок, а не обязательно последняя известная.
+  px <- lapply(dt$ticker, md_close_with_prev, on_date = as_of)
+  dt[, price_at   := vapply(px, function(x) x$close, numeric(1))]
+  dt[, price_prev := vapply(px, function(x) x$prev,  numeric(1))]
+  dt[, session    := as.Date(vapply(px, function(x) as.numeric(x$session), numeric(1)),
+                             origin = "1970-01-01")]
 
-  dt[, entry_value   := quantity * entry_price]
-  dt[, current_value := quantity * current_price]
-  dt[, growth_pct     := (current_price / entry_price - 1) * 100]
-  dt[, growth_from_base_pct := (current_price / base_price - 1) * 100]
-  dt[, pnl           := current_value - entry_value]
+  # Позиция существует только с даты покупки. Без этого портфель «был» и за
+  # полгода до того, как его купили, — числа выглядели бы осмысленно и были бы
+  # выдумкой.
+  # Дата покупки известна не всегда (позиции Exante её не несут). Неизвестна —
+  # считаем позицию открытой: выдумывать дату входа нельзя.
+  dt[, held := if ("purchase_date" %in% names(dt))
+                 is.na(purchase_date) | as.Date(purchase_date) <= as_of
+               else TRUE]
+  dt[, quantity_at := data.table::fifelse(held, quantity, 0)]
+
+  dt[is.na(entry_price), entry_price := sapply(ticker, get_close_on_date, date = entry_date)]
+  dt[, current_price := price_at]
+  dt[, base_price    := sapply(ticker, get_close_on_date, date = base_date)]
+
+  dt[, entry_value   := quantity_at * entry_price]
+  dt[, current_value := quantity_at * price_at]
+  dt[, prev_value    := quantity_at * price_prev]
+  dt[, growth_pct            := (price_at / entry_price - 1) * 100]
+  dt[, growth_from_base_pct  := (price_at / base_price - 1) * 100]
+  dt[, day_change_pct        := (price_at / price_prev - 1) * 100]
+  dt[, pnl                   := current_value - entry_value]
 
   total_current <- sum(dt$current_value, na.rm = TRUE)
   dt[, weight_pct := current_value / total_current * 100]
 
+  data.table::setattr(dt, "as_of", as_of)
   dt[]
 }
 
@@ -98,14 +126,22 @@ build_portfolio_metrics <- function(positions = get_portfolio_positions(),
 # кредитов. Поэтому: нет цены хотя бы по одной позиции — итог NA, а интерфейс
 # обязан показать прочерк и причину.
 summarize_portfolio <- function(metrics) {
-  entry_value   <- sum(metrics$entry_value)
-  current_value <- sum(metrics$current_value)
+  held <- if ("quantity_at" %in% names(metrics)) metrics[quantity_at > 0] else metrics
+  entry_value   <- sum(held$entry_value)
+  current_value <- sum(held$current_value)
+  prev_value    <- if ("prev_value" %in% names(held)) sum(held$prev_value) else NA_real_
   list(
     entry_value   = entry_value,
     current_value = current_value,
+    prev_value    = prev_value,
+    # «Накопленным итогом» — от покупки до выбранной даты.
     pnl           = current_value - entry_value,
     growth_pct    = (current_value / entry_value - 1) * 100,
-    priced        = sum(is.finite(metrics$current_price)),
-    total         = nrow(metrics)
+    # «На момент» — изменение за одну торговую сессию.
+    day_pnl       = current_value - prev_value,
+    day_pct       = (current_value / prev_value - 1) * 100,
+    positions     = nrow(held),
+    priced        = sum(is.finite(held$current_price)),
+    total         = nrow(held)
   )
 }

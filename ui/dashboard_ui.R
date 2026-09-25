@@ -72,6 +72,33 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
   white-space:nowrap}
 .hdr a:hover{color:var(--orange-dk)}
 
+/* --- полоса времени ---------------------------------------------------- */
+.tl{flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:4px 14px 0;
+  background:var(--surface);border-bottom:1px solid var(--border)}
+.tl .lab{display:flex;align-items:center;font-size:11px;color:var(--dim);
+  font-weight:700;white-space:nowrap;flex:none}
+.tl .sld{flex:1 1 auto;min-width:0}
+.tl .val{font-weight:800;font-size:14px;white-space:nowrap;flex:none}
+/* ionRangeSlider: прижимаем по высоте и красим в фирменный оранжевый.
+   Селекторы БЕЗ имени скина (.irs--flat / .irs--shiny): скин задаётся
+   настройкой shinyWidgets и меняется, а классы .irs-bar / .irs-handle
+   одинаковы во всех. Привязка к скину давала синюю полосу, которой нет в
+   палитре. */
+.tl .irs{height:36px;font-family:var(--font)}
+.tl .irs-line{top:16px;height:6px;background:var(--grid);border:0;
+  border-radius:3px}
+.tl .irs-bar{top:16px;height:6px;background:var(--orange);border:0;
+  border-radius:3px}
+.tl .irs-handle{top:9px;width:20px;height:20px}
+.tl .irs-handle>i:first-child,.tl .irs-handle.single{background:var(--orange-dk)}
+.tl .irs-single{background:var(--orange-dk);color:#fff;font-size:10.5px;
+  font-weight:700;top:0;border-radius:4px}
+.tl .irs-single:before{border-top-color:var(--orange-dk)}
+.tl .irs-min,.tl .irs-max{background:transparent;color:var(--faint);
+  font-size:10px;top:2px}
+.tl .irs-grid{display:none}
+.tl .form-group{margin:0}
+
 /* --- KPI --------------------------------------------------------------- */
 .kpis{flex:0 0 auto;display:grid;gap:8px;padding:8px 12px;
   grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
@@ -99,6 +126,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
    и полэкрана уходило в белое поле. */
 .blnr-col{display:grid;gap:8px;min-height:0;grid-template-rows:auto minmax(0,1fr)}
 .blnr-col--solo{grid-template-rows:minmax(0,1fr)}
+/* Карточка по высоте содержимого: когда показывать нечего, пусть под ней
+   будет фон страницы, а не белое поле на пол-экрана. */
+.blnr-col--compact{grid-template-rows:auto;align-content:start}
 /* uiOutput оборачивает содержимое в свой div: без display:contents он стал бы
    единственной ячейкой грида и ломал раскладку ряда. */
 .blnr-row--top>.shiny-html-output,.blnr-row--bot>.shiny-html-output{display:contents}
@@ -122,6 +152,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
 .bd--plot{overflow:hidden;padding:2px}
 .bd--plot>div,.bd--plot .plotly,.bd--plot .html-widget{height:100%!important}
 .bd--flush{padding:0;display:flex;flex-direction:column}
+.empty{padding:14px 12px;font-size:12px;color:var(--dim)}
+.empty b{color:var(--text)}
 
 /* --- подсказка под i --------------------------------------------------- */
 .ii{position:relative;display:inline-flex;align-items:center;
@@ -178,6 +210,38 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
   tags$style(HTML(paste0(vars, rules)))
 }
 
+# Полоса времени. Правый край шкалы — фактическая дата (последняя сессия в
+# хранилище), слева от неё ретроспектива на BLNR_TIMELINE_DAYS сессий.
+timelineUI <- function() {
+  sessions <- store_sessions_window(BLNR_TIMELINE_DAYS)
+  if (length(sessions) == 0) {
+    # Хранилище пусто — ползунку не из чего строить ось. Рисовать пустой
+    # виджет незачем: о причине уже сказано плашкой в шапке.
+    return(NULL)
+  }
+  labels <- format(sessions, "%d.%m.%Y")
+  tags$div(
+    class = "tl",
+    tags$span(class = "lab", "Дата",
+              info_tip(paste0(
+                "Портфель и сравнение с моделью показаны на выбранную ",
+                "торговую сессию. Шкала — ", length(sessions), " последних ",
+                "сессий из локального хранилища рядов; правый край — ",
+                "фактическая дата (", utils::tail(labels, 1), "). ",
+                "Выходных и праздников на шкале нет: в эти дни цены не ",
+                "существует, и показывать портфель было бы не из чего. ",
+                "Позиция, купленная позже выбранной даты, в расчёт не ",
+                "попадает — портфеля на тот момент ещё не было."))),
+    tags$div(class = "sld",
+             shinyWidgets::sliderTextInput(
+               "as_of", label = NULL, choices = labels,
+               selected = utils::tail(labels, 1),
+               grid = FALSE, force_edges = TRUE, width = "100%"
+             )),
+    uiOutput("tl_marker", inline = TRUE)
+  )
+}
+
 dashboardUI <- function() {
   fluidPage(
     tags$head(dashboardCSS()),
@@ -199,6 +263,12 @@ dashboardUI <- function() {
         ),
         uiOutput("logout_ui", inline = TRUE)
       ),
+
+      # --- полоса времени -------------------------------------------------
+      # Ось строится по РЕАЛЬНЫМ торговым сессиям из хранилища, а не по
+      # календарю: на календарной шкале половина делений — выходные, где цены
+      # нет и портфель показать не из чего.
+      timelineUI(),
 
       # --- KPI -----------------------------------------------------------
       uiOutput("kpi_strip", class = "kpis"),

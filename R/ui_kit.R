@@ -81,6 +81,11 @@ kpi <- function(value, label, tone = NULL, tip = NULL, tip_align = "l",
   )
 }
 
+# Компактное пустое состояние ВНУТРИ уже существующей карточки. Отдельную
+# карточку ради строчки текста заводить нельзя (конституция), но и оставлять
+# белую коробку без объяснения — тоже: пользователь решит, что стенд сломан.
+empty_state <- function(...) tags$div(class = "empty", ...)
+
 fmt_money <- function(x, digits = 0) {
   if (!is.finite(x)) return("—")
   paste0("$", formatC(round(x, digits), format = "f", digits = digits,

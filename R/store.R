@@ -38,19 +38,34 @@ empty_candles <- function() {
 
 # Читает ряд из хранилища. Пустая таблица, если ряда нет или файл битый —
 # вызывающий код обязан отличать это от «цена равна нулю».
+# Память процесса на прочитанные ряды. Нужна из-за ползунка времени: каждый
+# его шаг пересчитывает портфель, а это десяток чтений одних и тех же файлов.
+# Ключ включает время правки файла, поэтому после ночной загрузки память
+# обновляется сама и подсунуть устаревший ряд не может.
+.STORE_MEM <- new.env(parent = emptyenv())
+
 store_read_candles <- function(ticker) {
   f <- store_candles_path(ticker)
   if (!file.exists(f)) return(empty_candles())
+  key <- paste0(f, "@", as.numeric(file.mtime(f)))
+  hit <- .STORE_MEM[[key]]
+  if (!is.null(hit)) return(hit)
+
   dt <- tryCatch(data.table::fread(f), error = function(e) NULL)
   if (is.null(dt) || nrow(dt) == 0 || !all(c("date", "close") %in% names(dt))) {
     return(empty_candles())
   }
   dt[, date := as.Date(date)]
   data.table::setorder(dt, date)
+  # Чистим прошлые версии этого же ряда, чтобы память не росла после загрузок.
+  old <- grep(paste0("^", f, "@"), ls(.STORE_MEM), value = TRUE, fixed = FALSE)
+  if (length(old)) rm(list = old, envir = .STORE_MEM)
+  assign(key, dt[], envir = .STORE_MEM)
   dt[]
 }
 
 store_write_candles <- function(ticker, dt) {
+  rm(list = ls(.STORE_MEM), envir = .STORE_MEM)
   dir.create(store_candles_dir(), showWarnings = FALSE, recursive = TRUE)
   data.table::setorder(dt, date)
   data.table::fwrite(dt, store_candles_path(ticker))
@@ -143,4 +158,34 @@ store_verify_series <- function(series, today = Sys.Date(),
     }
   }
   issues
+}
+
+# --- Торговые сессии --------------------------------------------------------
+# Ось времени для ползунка строится по РЕАЛЬНЫМ торговым дням из хранилища, а
+# не по календарю: календарная шкала даёт выходные и праздники, на которых
+# цены нет, и пользователь выбирает дату, для которой нечего показать.
+#
+# Берём пересечение дат по указанным бумагам (по умолчанию — по всему
+# реестру): сессия годится, только если цена известна по всем инструментам,
+# иначе портфель на эту дату посчитался бы по неполному набору.
+store_sessions <- function(tickers = store_tickers()) {
+  tickers <- tickers[nzchar(tickers)]
+  if (length(tickers) == 0) return(as.Date(character()))
+  dates <- NULL
+  for (tk in tickers) {
+    d <- store_read_candles(tk)$date
+    if (length(d) == 0) return(as.Date(character()))
+    dates <- if (is.null(dates)) d else intersect(dates, d)
+  }
+  sort(as.Date(dates, origin = "1970-01-01"))
+}
+
+# Последние `n` сессий по состоянию на дату (включительно). Это и есть
+# «ретроспектива слева от фактической даты».
+store_sessions_window <- function(n = 150L, as_of = NULL,
+                                  tickers = store_tickers()) {
+  s <- store_sessions(tickers)
+  if (length(s) == 0) return(s)
+  if (!is.null(as_of)) s <- s[s <= as.Date(as_of)]
+  utils::tail(s, n)
 }

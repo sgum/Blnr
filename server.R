@@ -50,17 +50,39 @@ shinyServer(function(input, output, session) {
 
   # Данные портфеля ####
 
-  # Единственное место, где стенд ходит в интернет за ценами: старт сессии и
-  # кнопка «Обновить». Файл прогноза меняется чаще, чем цены, и пересчёт
-  # прогноза поверх уже полученных цен похода в сеть не требует.
-  portfolio_prices <- eventReactive(input$portfolio_refresh, {
-    out <- build_portfolio_metrics()
-    attr(out, "as_of") <- Sys.time()
-    out
-  }, ignoreNULL = FALSE)
+  # Стенд читает ряды из локального хранилища и в интернет не ходит (лимит
+  # источника — 100 запросов в сутки, см. R/store.R). Кнопка «Обновить»
+  # перечитывает хранилище: ночная загрузка могла отработать за время сессии.
+  store_touch <- reactiveVal(Sys.time())
+  observeEvent(input$portfolio_refresh, store_touch(Sys.time()))
 
+  # Выбранная дата — торговая сессия с полосы времени. Пока ползунок не
+  # построен (пустое хранилище), берём последнюю известную сессию.
+  sel_date <- reactive({
+    lab <- input$as_of
+    if (is.null(lab) || !nzchar(lab)) {
+      s <- store_sessions_window(1L)
+      return(if (length(s)) s else Sys.Date())
+    }
+    as.Date(lab, format = "%d.%m.%Y")
+  })
+
+  # Фактическая дата — правый край шкалы, последняя сессия в хранилище.
+  fact_date <- reactive({
+    store_touch()
+    s <- store_sessions_window(1L)
+    if (length(s)) s else as.Date(NA)
+  })
+
+  portfolio_prices <- reactive({
+    store_touch()
+    build_portfolio_metrics(as_of = sel_date())
+  })
+
+  # Прогноз сравнивается на ТУ ЖЕ дату, что и факт: иначе ползунок двигал бы
+  # факт, а модель оставалась бы на сегодня, и невязка была бы выдумкой.
   portfolio_metrics <- reactive({
-    add_forecast_to_metrics(portfolio_prices(), forecast_data())
+    add_forecast_to_metrics(portfolio_prices(), forecast_data(), as_of = sel_date())
   })
 
   portfolio_summary <- reactive({
@@ -74,11 +96,13 @@ shinyServer(function(input, output, session) {
   portfolio_vs_forecast <- reactive({
     m <- portfolio_metrics()
     if (is.null(m) || nrow(m) == 0 || !"forecast_pct" %in% names(m)) return(NULL)
+    # Только позиции, открытые на выбранную дату: непокупленная бумага не
+    # может ни обгонять модель, ни отставать от неё.
     ok <- is.finite(m$base_price) & is.finite(m$forecast_pct) &
-          is.finite(m$current_value) & is.finite(m$quantity)
+          is.finite(m$current_value) & m$quantity_at > 0
     if (!any(ok)) return(NULL)
-    base_value <- sum(m$quantity[ok] * m$base_price[ok])
-    fcst_value <- sum(m$quantity[ok] * m$base_price[ok] * (1 + m$forecast_pct[ok] / 100))
+    base_value <- sum(m$quantity_at[ok] * m$base_price[ok])
+    fcst_value <- sum(m$quantity_at[ok] * m$base_price[ok] * (1 + m$forecast_pct[ok] / 100))
     fact_value <- sum(m$current_value[ok])
     if (!is.finite(base_value) || base_value == 0) return(NULL)
     fact_pct <- (fact_value / base_value - 1) * 100
@@ -91,6 +115,9 @@ shinyServer(function(input, output, session) {
 
   snapshot_done <- reactiveVal(NULL)
   observe({
+    # Снимок истории пишется только за ФАКТИЧЕСКУЮ дату: иначе прогулка
+    # ползунком по прошлому переписала бы историю задним числом.
+    req(identical(sel_date(), fact_date()))
     m <- portfolio_metrics()
     today <- Sys.Date()
     if (!is.null(m) && nrow(m) > 0 && !all(is.na(m$forecast_pct)) &&
@@ -254,25 +281,64 @@ shinyServer(function(input, output, session) {
               tags$b(format(last, "%d.%m")), " (закрытие)")
   })
 
+  # Правая часть полосы времени: выбранная сессия и отметка фактической даты.
+  output$tl_marker <- renderUI({
+    sel <- sel_date(); fct <- fact_date()
+    at_fact <- isTRUE(identical(sel, fct))
+    tagList(
+      tags$span(class = "val", format(sel, "%d.%m.%Y")),
+      if (at_fact)
+        tags$span(class = "bdg ok", "\u25cf факт")
+      else
+        tags$span(class = "bdg", "факт ", tags$b(format(fct, "%d.%m")))
+    )
+  })
+
   # KPI ####
 
   output$kpi_strip <- renderUI({
     s  <- portfolio_summary()
     vf <- portfolio_vs_forecast()
+    sel <- sel_date()
+    sel_lab <- format(sel, "%d.%m.%Y")
+
+    # До первой покупки портфеля просто не было. Показать «$0» как результат
+    # было бы неправдой того же сорта, что нули при отказе источника, поэтому
+    # состояние названо словами.
+    if (s$positions == 0) {
+      return(kpi("—", "Стоимость портфеля", tip_align = "l",
+                 sub = paste0("на ", sel_lab, " бумаг ещё нет"),
+                 tip = paste0("Позиции куплены позже выбранной даты. ",
+                              "Сдвиньте ползунок вправо, к дате покупки.")))
+    }
+
     tiles <- list(
-      kpi(fmt_money(s$current_value), "Стоимость портфеля"),
-      kpi(fmt_signed_money(s$pnl), "Прибыль/убыток от покупки", tone_of(s$pnl)),
-      kpi(fmt_pct(s$growth_pct), "Рост от даты покупки", tone_of(s$growth_pct))
+      kpi(fmt_money(s$current_value), "В бумагах на дату",
+          sub = paste0(sel_lab, " \u00b7 позиций: ", s$positions),
+          tip = paste0("Стоимость бумаг по ценам закрытия ", sel_lab,
+                       ". Денежная часть счёта сюда не входит: остаток кэша ",
+                       "отдаёт только Exante API, он на стенде ещё не ",
+                       "подключён.")),
+      kpi(fmt_signed_money(s$day_pnl), "За сессию", tone_of(s$day_pnl),
+          sub = fmt_pct(s$day_pct),
+          tip = "Изменение стоимости бумаг за одну торговую сессию — «на момент»."),
+      kpi(fmt_signed_money(s$pnl), "Накопленным итогом", tone_of(s$pnl),
+          sub = fmt_pct(s$growth_pct),
+          tip = paste0("Результат от цены покупки до ", sel_lab,
+                       " — по открытым на эту дату позициям."))
     )
     if (!is.null(vf)) {
       tiles <- c(tiles, list(
         kpi(fmt_pp(vf$dev_pp), "Портфель против модели", tone_of(vf$dev_pp),
             # плитка крайняя справа — подсказку прижимаем к правому краю
             tip_align = "r",
-            tip = sprintf(paste("Стоимость портфеля от базы %s: факт %s, модель %s.",
-                                "Положительное значение — портфель идёт быстрее модели.",
-                                "Считается по стоимости, то есть с учётом веса позиций."),
-                          format(FORECAST_BASELINE_DATE, "%d.%m.%Y"),
+            sub = paste0("факт ", fmt_pct(vf$fact_pct), " \u00b7 модель ",
+                         fmt_pct(vf$fcst_pct)),
+            tip = sprintf(paste("Стоимость портфеля от базы %s на дату %s:",
+                                "факт %s, модель %s. Плюс — портфель идёт",
+                                "быстрее модели. Считается по стоимости, то",
+                                "есть с учётом веса позиций."),
+                          format(FORECAST_BASELINE_DATE, "%d.%m.%Y"), sel_lab,
                           fmt_pct(vf$fact_pct), fmt_pct(vf$fcst_pct)))
       ))
     }
@@ -295,12 +361,14 @@ shinyServer(function(input, output, session) {
   output$left_col <- renderUI({
     fd <- forecast_data()
     has_fc <- !is.null(fd) && nrow(fd) > 0
+    open_n <- nrow(portfolio_metrics()[quantity_at > 0])
     base_lab <- format(FORECAST_BASELINE_DATE, "%d.%m.%Y")
 
     positions <- panel(
       "Позиции",
+      sub = format(sel_date(), "%d.%m.%Y"),
       tip = paste0(
-        "Цены — marketdata.app, тот же источник, что кормит внешнюю модель. ",
+        "Цены — закрытие выбранной торговой сессии из локального хранилища. ",
         "«От ", format(FORECAST_BASELINE_DATE, "%d.%m"), "» — рост от базы ",
         "прогноза: модель построена от неё же, поэтому факт и прогноз ",
         "сравнимы напрямую. Δ = факт − модель в процентных пунктах, ",
@@ -309,6 +377,23 @@ shinyServer(function(input, output, session) {
       body_class = "bd--flush",
       uiOutput("pos_table")
     )
+
+    # На дату до первой покупки позиций нет — и сравнивать с моделью нечего.
+    # Рисуем одну карточку с коротким пустым состоянием вместо двух белых
+    # коробок: карточка без результата на экране не нужна.
+    if (open_n == 0) {
+      first <- suppressWarnings(min(portfolio_holdings$purchase_date))
+      return(tags$div(
+        class = "blnr-col blnr-col--compact",
+        panel("Позиции", sub = format(sel_date(), "%d.%m.%Y"),
+              tip = paste0("Портфель показан на выбранную сессию. Позиции, ",
+                           "купленные позже неё, в расчёт не попадают."),
+              body_class = "bd--flush",
+              empty_state("На эту дату позиций нет. Первая покупка — ",
+                          tags$b(format(first, "%d.%m.%Y")), "."))
+      ))
+    }
+
     if (!has_fc) {
       return(tags$div(class = "blnr-col blnr-col--solo", positions))
     }
@@ -317,9 +402,11 @@ shinyServer(function(input, output, session) {
       positions,
       panel(
         "Факт против модели",
+        sub = format(sel_date(), "%d.%m.%Y"),
         tip = paste0("По каждой бумаге: фактический рост от ", base_lab,
-                     " рядом с прогнозом модели на сегодня. Расхождение ",
-                     "столбиков и есть повод для решения по позиции."),
+                     " рядом с прогнозом модели на выбранную дату. ",
+                     "Расхождение столбиков и есть повод для решения ",
+                     "по позиции."),
         body_class = "bd--plot",
         plotlyOutput("chart_vs_forecast", height = "100%")
       )
@@ -327,7 +414,7 @@ shinyServer(function(input, output, session) {
   })
 
   output$pos_table <- renderUI({
-    m <- portfolio_metrics()
+    m <- portfolio_metrics()[quantity_at > 0]
     req(nrow(m) > 0)
     sel <- input$sel_ticker %||% ""
     has_fc <- any(is.finite(m$forecast_pct))
@@ -346,8 +433,9 @@ shinyServer(function(input, output, session) {
         class = if (identical(r$ticker, sel)) "sel" else NULL,
         onclick = sprintf("Shiny.setInputValue('pick_ticker','%s',{priority:'event'})", r$ticker),
         tags$td(class = "nm", r$ticker),
-        tags$td(formatC(r$quantity, format = "d")),
+        tags$td(formatC(r$quantity_at, format = "d")),
         plain(r$entry_price), plain(r$current_price),
+        num(r$day_change_pct, fmt_pct),
         plain(r$current_value, 0),
         # Вес — числом и заливкой ячейки: отдельная карточка «Структура
         # портфеля» ради тех же пяти чисел заняла бы полосу экрана.
@@ -369,7 +457,8 @@ shinyServer(function(input, output, session) {
 
     tags$div(class = "rk", tags$table(
       tags$thead(tags$tr(
-        tags$th("Тикер"), tags$th("Кол-во"), tags$th("Вход"), tags$th("Тек."),
+        tags$th("Тикер"), tags$th("Кол-во"), tags$th("Вход"),
+        tags$th("Цена"), tags$th("За сессию"),
         tags$th("Стоимость"), tags$th("Вес"), tags$th("От покупки"),
         tags$th(paste0("От ", base_lab)),
         if (has_fc) tags$th("Модель"),
@@ -378,6 +467,8 @@ shinyServer(function(input, output, session) {
       tags$tbody(rows),
       tags$tfoot(tags$tr(
         tags$td("Итого"), tags$td(), tags$td(), tags$td(),
+        tags$td(class = if (isTRUE(s$day_pct >= 0)) "pos" else "neg",
+                fmt_pct(s$day_pct)),
         tags$td(fmt_money(s$current_value)), tags$td("100%"),
         tags$td(class = if (s$growth_pct >= 0) "pos" else "neg", fmt_pct(s$growth_pct)),
         tags$td(class = if (!is.null(vf) && vf$fact_pct >= 0) "pos" else "neg",
@@ -394,11 +485,15 @@ shinyServer(function(input, output, session) {
 
   output$chart_instrument <- renderPlotly({
     tk <- req(input$sel_ticker)
-    cnd <- md_candles(tk)
+    sel <- sel_date()
+    store_touch()
+    # Показываем ту же глубину, что и шкала времени: экран и ползунок должны
+    # говорить об одном отрезке.
+    cnd <- md_candles(tk, days = BLNR_TIMELINE_DAYS)
     # shiny::validate явно: jsonlite (грузится через R/marketdata.R) перекрывает
     # validate своей функцией проверки JSON, и голый вызов уходит не туда.
     shiny::validate(shiny::need(nrow(cnd) > 0, sprintf(
-      "Нет котировок по %s: marketdata.app не отдал свечи (проверьте MARKETDATA_TOKEN).", tk)))
+      "Нет рядов по %s: ночная загрузка их ещё не положила в хранилище.", tk)))
 
     p <- plot_ly(
       cnd, x = ~date, type = "candlestick",
@@ -411,14 +506,13 @@ shinyServer(function(input, output, session) {
     )
 
     # Траектория цены по модели: прогноз хранится как накопленный процент от
-    # базы, поэтому цена = цена базы * (1 + прогноз/100). Горизонт обрезаем
-    # месяцем вперёд — иначе прогноз до 2028 сожмёт свечи в полоску.
+    # базы, поэтому цена = цена базы * (1 + прогноз/100). Обрезаем выбранной
+    # датой: на момент времени T мы не могли видеть будущее за T.
     fd <- forecast_data()
     if (!is.null(fd) && nrow(fd) > 0 && tk %in% fd$ticker) {
       base_px <- md_close_on_date(tk, FORECAST_BASELINE_DATE)
       if (is.finite(base_px)) {
-        horizon <- max(cnd$date) + 30
-        f <- fd[ticker == tk][date <= horizon]
+        f <- fd[ticker == tk][date <= sel]
         if (nrow(f) > 0) {
           p <- add_trace(p, data = f, x = ~date,
                          y = base_px * (1 + f$forecast_growth_pct / 100),
@@ -430,16 +524,20 @@ shinyServer(function(input, output, session) {
       }
     }
 
-    # Цена входа — только если бумага действительно в портфеле.
-    m <- portfolio_metrics()
-    shapes <- list()
+    shapes <- list(
+      # Отметка выбранной сессии — она же положение ползунка.
+      list(type = "line", xref = "x", yref = "paper",
+           x0 = sel, x1 = sel, y0 = 0, y1 = 1,
+           line = list(color = BLNR_COLORS$orange, width = 1.5))
+    )
+    # Цена входа — только если бумага действительно в портфеле на эту дату.
+    m <- portfolio_metrics()[quantity_at > 0]
     if (tk %in% m$ticker) {
       ep <- m[ticker == tk][1, entry_price]
       if (is.finite(ep)) {
-        shapes <- list(list(type = "line", xref = "paper", x0 = 0, x1 = 1,
-                            y0 = ep, y1 = ep,
-                            line = list(color = BLNR_COLORS$plan, width = 1,
-                                        dash = "dot")))
+        shapes <- c(shapes, list(list(
+          type = "line", xref = "paper", x0 = 0, x1 = 1, y0 = ep, y1 = ep,
+          line = list(color = BLNR_COLORS$plan, width = 1, dash = "dot"))))
       }
     }
 
@@ -448,8 +546,8 @@ shinyServer(function(input, output, session) {
       showlegend = FALSE,
       shapes = shapes,
       xaxis = list(title = "", rangeslider = list(visible = FALSE),
-                   gridcolor = "#eceff3"),
-      yaxis = list(title = "", gridcolor = "#eceff3", tickprefix = "$")
+                   gridcolor = BLNR_COLORS$grid),
+      yaxis = list(title = "", gridcolor = BLNR_COLORS$grid, tickprefix = "$")
     )
   })
 
@@ -457,8 +555,16 @@ shinyServer(function(input, output, session) {
   # Карточка рисуется только когда в ней есть результат: панель сравнения —
   # когда загружен прогноз, панель накопления невязки — когда снимков хотя бы
   # за два дня. Пустых коробок с объяснением, почему они пусты, на экране нет.
+  # История невязки — только до выбранной даты: на момент T будущих снимков
+  # ещё не существовало, показывать их значит рисовать то, чего не было.
+  snapshots_upto <- reactive({
+    snaps <- snapshots_rv()
+    if (nrow(snaps) == 0) return(snaps)
+    snaps[date <= sel_date()]
+  })
+
   output$bot_panels <- renderUI({
-    n_days <- length(unique(snapshots_rv()$date))
+    n_days <- length(unique(snapshots_upto()$date))
     # Меньше двух дней — рисовать нечего, и нижний ряд не занимает экран вовсе.
     if (n_days < 2) return(NULL)
     panel(
@@ -471,7 +577,7 @@ shinyServer(function(input, output, session) {
   })
 
   output$chart_vs_forecast <- renderPlotly({
-    m <- portfolio_metrics()
+    m <- portfolio_metrics()[quantity_at > 0]
     req(nrow(m) > 0)
     blnr_plot_layout(
       add_trace(
@@ -488,7 +594,7 @@ shinyServer(function(input, output, session) {
   })
 
   output$chart_deviation <- renderPlotly({
-    snaps <- snapshots_rv()
+    snaps <- snapshots_upto()
     req(nrow(snaps) > 0)
     data.table::setorder(snaps, date)
     days <- format(sort(unique(snaps$date)), "%d.%m")

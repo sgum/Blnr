@@ -240,7 +240,71 @@ local({
                                              today = as.Date("2026-09-19")))))
 })
 
-cat("== 8. Сборка интерфейса ==\n")
+cat("== 8. Портфель на момент времени ==\n")
+# Ползунок времени показывает состояние на выбранную СЕССИЮ. Два дефекта,
+# которые здесь легко допустить и невозможно заметить глазами:
+#   * цена берётся последняя известная, а не на выбранную дату (портфель
+#     «не реагирует» на ползунок, но выглядит правдоподобно);
+#   * позиция считается существующей до даты покупки (портфель «был» за
+#     полгода до того, как его купили).
+local({
+  tmpstore <- file.path(tempdir(), paste0("asof_", as.integer(runif(1, 1e6, 9e6))))
+  old_dir <- BLNR_STORE_DIR
+  BLNR_STORE_DIR <<- tmpstore
+  on.exit({ BLNR_STORE_DIR <<- old_dir; unlink(tmpstore, recursive = TRUE) }, add = TRUE)
+
+  ser <- function(from) data.table(
+    date = seq(as.Date("2026-09-01"), by = "day", length.out = 20),
+    open = 1, high = 2, low = 0.5,
+    close = as.numeric(seq(from, from + 19)), volume = NA_real_
+  )
+  store_write_candles("GS", ser(1000))
+  store_write_candles("GE", ser(300))
+
+  holdings <- data.table(
+    ticker = c("GS", "GE"), quantity = c(5, 16),
+    entry_price = c(1000, 300), current_price = NA_real_,
+    purchase_date = as.Date(c("2026-09-05", "2026-09-15")), source = "manual"
+  )
+
+  m10 <- build_portfolio_metrics(holdings, as_of = as.Date("2026-09-10"))
+  s10 <- summarize_portfolio(m10)
+  # 10.09 — пятая свеча после 05.09: close GS = 1009. GE куплена только 15.09.
+  ok("цена берётся на выбранную дату, а не последняя",
+     isTRUE(all.equal(m10[ticker == "GS", price_at], 1009)))
+  ok("бумага, купленная позже, в расчёт не входит", s10$positions == 1)
+  ok("стоимость на дату по одной позиции",
+     isTRUE(all.equal(s10$current_value, 5 * 1009)))
+
+  m18 <- build_portfolio_metrics(holdings, as_of = as.Date("2026-09-18"))
+  s18 <- summarize_portfolio(m18)
+  ok("после второй покупки позиций две", s18$positions == 2)
+  # Сравнивать итоги двух дат мало: они различаются и из-за второй покупки.
+  # Проверяем цену ОДНОЙ И ТОЙ ЖЕ бумаги — так дефект «цена всегда последняя»
+  # не спрячется за изменением состава.
+  ok("другая дата -> другая цена по той же бумаге",
+     m10[ticker == "GS", price_at] != m18[ticker == "GS", price_at])
+  # «За сессию» — от предыдущей торговой сессии, а не от даты покупки.
+  ok("за сессию считается от предыдущей свечи",
+     isTRUE(all.equal(m18[ticker == "GS", price_prev], 1016)))
+  ok("итог за сессию суммирует только открытые позиции",
+     isTRUE(all.equal(s18$day_pnl, 5 * (1017 - 1016) + 16 * (317 - 316))))
+
+  m01 <- build_portfolio_metrics(holdings, as_of = as.Date("2026-09-01"))
+  ok("до первой покупки позиций нет", summarize_portfolio(m01)$positions == 0)
+
+  # Ось времени — только реальные торговые дни, и общие для всех бумаг.
+  store_write_candles("SHORT", ser(50)[1:5])
+  ok("сессии — пересечение по всем бумагам", length(store_sessions()) == 5)
+  ok("окно ретроспективы ограничено",
+     length(store_sessions_window(3, tickers = c("GS", "GE"))) == 3)
+  ok("окно отсчитывается от указанной даты",
+     identical(max(store_sessions_window(3, as_of = as.Date("2026-09-10"),
+                                         tickers = c("GS", "GE"))),
+               as.Date("2026-09-10")))
+})
+
+cat("== 9. Сборка интерфейса ==\n")
 # Гейт против класса дефектов «экран не собрался», который до выкладки ничем
 # не виден: перекрытые имена функций (jsonlite::validate поверх shiny::validate,
 # httr::config поверх plotly::config), пакет, нужный при СБОРКЕ UI, но

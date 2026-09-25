@@ -213,3 +213,23 @@ md_close_on_date <- function(ticker, on_date, days = WATCHLIST_RETRO_DAYS,
   if (nrow(sub) == 0) return(NA_real_)
   sub[nrow(sub), close]
 }
+
+# Цена на дату И на предыдущую сессию за один проход по ряду — для показателя
+# «за день» на выбранном моменте времени. Отдельными вызовами это два чтения
+# одного и того же файла на каждую бумагу.
+# ВНИМАНИЕ: аргумент снова НЕ называется date (см. предупреждение выше).
+md_close_with_prev <- function(ticker, on_date, days = WATCHLIST_RETRO_DAYS,
+                               online = md_online_allowed()) {
+  empty <- list(close = NA_real_, prev = NA_real_, session = as.Date(NA))
+  cnd <- md_candles(ticker, days = days, online = online)
+  if (nrow(cnd) == 0) return(empty)
+  target <- as.Date(on_date)
+  sub <- cnd[date <= target]
+  n <- nrow(sub)
+  if (n == 0) return(empty)
+  list(
+    close   = sub[n, close],
+    prev    = if (n >= 2) sub[n - 1L, close] else NA_real_,
+    session = sub[n, date]
+  )
+}

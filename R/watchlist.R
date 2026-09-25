@@ -45,6 +45,10 @@ WATCHLIST <- data.table::data.table(
 # на одном окне.
 WATCHLIST_RETRO_DAYS <- as.integer(Sys.getenv("BLNR_RETRO_DAYS", unset = "120"))
 
+# Длина шкалы времени на экране — сколько торговых сессий ретроспективы лежит
+# слева от фактической даты.
+BLNR_TIMELINE_DAYS <- as.integer(Sys.getenv("BLNR_TIMELINE_DAYS", unset = "150"))
+
 # Какие тикеры показывать и грузить. По умолчанию весь реестр; переменной
 # BLNR_WATCHLIST можно сузить ("GS,GE,AMD,GOOG,NVDA").
 watchlist_active <- function() {
