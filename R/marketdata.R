@@ -81,24 +81,59 @@ md_get <- function(path, query = list()) {
   out
 }
 
-# --- Котировка -------------------------------------------------------------
-# Последняя цена по инструменту. Возвращает NA_real_ при любой ошибке —
-# вызывающий код отличает «нет данных» по NA, а причина уходит в журнал.
-md_last_price <- function(ticker, type = instrument_type(ticker)) {
-  key <- paste0("q_", type, "_", ticker)
-  hit <- .md_cache_get(key, ttl_sec = 60)
-  if (!is.null(hit)) return(hit)
+# --- Состояние источника ----------------------------------------------------
+# Почему это вообще есть. У аккаунта marketdata.app конечный лимит кредитов, и
+# при его исчерпании API отвечает 200/429 с {"s":"error"} по КАЖДОМУ запросу.
+# Если такой ответ превращать просто в NA, витрина показывает не ошибку, а
+# правдоподобные $0 и −100% — то есть врёт уверенно. Ровно это случилось
+# 25.09.2026 (и ровно про это уже была запись в docs/dev.md про Yahoo).
+# Поэтому причина последней неудачи хранится и поднимается в интерфейс.
+.MD_STATE <- new.env(parent = emptyenv())
+.MD_STATE$last_error <- NULL
 
-  seg <- if (identical(type, "index")) "indices" else "stocks"
-  res <- md_get(sprintf("/%s/quotes/%s/", seg, ticker))
-  if (!is.null(res$error)) {
-    message(sprintf("[MD] WARN котировка %s: %s", ticker, res$error))
-    return(NA_real_)
+md_note_error <- function(res) {
+  .MD_STATE$last_error <- list(
+    code = res$error,
+    status = res$status %||% NA_integer_,
+    message = res$message %||% NA_character_,
+    at = Sys.time()
+  )
+  invisible(NULL)
+}
+
+md_last_error <- function() .MD_STATE$last_error
+
+# Человеческая причина для шапки стенда. NULL, если сбоев не было.
+md_status_text <- function() {
+  e <- md_last_error()
+  if (is.null(e)) return(NULL)
+  if (identical(e$code, "marketdata_no_token")) return("не задан MARKETDATA_TOKEN")
+  if (identical(e$status, 429L) || identical(e$status, 429) ||
+      (!is.na(e$message) && grepl("credit limit", e$message, ignore.case = TRUE))) {
+    return("исчерпан лимит кредитов marketdata.app")
   }
-  px <- suppressWarnings(as.numeric(res$last[1]))
-  if (is.na(px) && !is.null(res$mid)) px <- suppressWarnings(as.numeric(res$mid[1]))
-  .md_cache_put(key, px)
-  px
+  if (!is.na(e$status)) return(sprintf("marketdata.app ответил %s", e$status))
+  e$code
+}
+
+# --- Котировка -------------------------------------------------------------
+# Последняя цена = закрытие последней дневной свечи, а НЕ отдельный запрос
+# /quotes. Причина — лимит кредитов: один запрос свечей на инструмент в день
+# обслуживает сразу и текущую цену, и цену на любую прошлую дату, и график.
+# Отдельные котировки жгли по запросу на бумагу при каждом открытии стенда и
+# выедали суточный лимит за несколько перезагрузок.
+# Возвращает NA_real_, когда данных нет; причина — в md_last_error().
+md_last_price <- function(ticker, type = instrument_type(ticker)) {
+  cnd <- md_candles(ticker, type = type)
+  if (nrow(cnd) == 0) return(NA_real_)
+  cnd[nrow(cnd), close]
+}
+
+# Дата, на которую известна «текущая» цена: последняя торговая сессия в свечах.
+md_last_price_date <- function(ticker, type = instrument_type(ticker)) {
+  cnd <- md_candles(ticker, type = type)
+  if (nrow(cnd) == 0) return(as.Date(NA))
+  cnd[nrow(cnd), date]
 }
 
 # Котировки по вектору тикеров — data.table(ticker, last).
@@ -127,7 +162,9 @@ md_candles <- function(ticker, days = WATCHLIST_RETRO_DAYS,
     low = numeric(), close = numeric(), volume = numeric()
   )
   if (!is.null(res$error)) {
-    message(sprintf("[MD] WARN свечи %s: %s", ticker, res$error))
+    md_note_error(res)
+    message(sprintf("[MD] WARN свечи %s: %s (%s)", ticker, res$error,
+                    res$message %||% ""))
     return(empty)
   }
   n <- length(res$t)

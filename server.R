@@ -217,10 +217,23 @@ shinyServer(function(input, output, session) {
               "Прогноз: ", tags$b(sprintf("%d бумаг", length(unique(fd$ticker)))))
   })
 
+  # Котировки и честное состояние источника. Если marketdata.app отдал ошибку
+  # (исчерпан лимит кредитов, нет токена), об этом говорится прямо в шапке:
+  # молчащий источник + нули в плитках читаются как «портфель обнулился».
   output$hd_updated <- renderUI({
-    ts <- attr(portfolio_prices(), "as_of")
-    tags$span(class = "bdg", "Котировки: ",
-              tags$b(if (is.null(ts)) "—" else format(ts, "%H:%M:%S")))
+    m   <- portfolio_prices()
+    err <- md_status_text()
+    if (!is.null(err)) {
+      return(tags$span(class = "bdg warn",
+                       title = "Цены не получены, поэтому стоимость и рост показаны прочерком, а не нулём.",
+                       "Нет котировок: ", tags$b(err)))
+    }
+    d <- suppressWarnings(max(vapply(m$ticker, function(tk)
+      as.numeric(md_last_price_date(tk)), numeric(1)), na.rm = TRUE))
+    tags$span(class = "bdg", "Котировки на ",
+              tags$b(if (is.finite(d)) format(as.Date(d, origin = "1970-01-01"), "%d.%m")
+                     else "—"),
+              " (закрытие)")
   })
 
   # KPI ####

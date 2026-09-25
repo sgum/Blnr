@@ -90,13 +90,22 @@ build_portfolio_metrics <- function(positions = get_portfolio_positions(),
 }
 
 # Сводные метрики по всему портфелю.
+#
+# na.rm = TRUE здесь НЕЛЬЗЯ: если источник котировок отдал ошибку, все
+# current_price приходят NA, сумма с na.rm даёт 0, и витрина показывает
+# «стоимость $0, рост −100%» — уверенную неправду вместо «нет данных».
+# Именно так стенд выглядел 25.09.2026, когда marketdata.app упёрся в лимит
+# кредитов. Поэтому: нет цены хотя бы по одной позиции — итог NA, а интерфейс
+# обязан показать прочерк и причину.
 summarize_portfolio <- function(metrics) {
-  entry_value   <- sum(metrics$entry_value, na.rm = TRUE)
-  current_value <- sum(metrics$current_value, na.rm = TRUE)
+  entry_value   <- sum(metrics$entry_value)
+  current_value <- sum(metrics$current_value)
   list(
     entry_value   = entry_value,
     current_value = current_value,
     pnl           = current_value - entry_value,
-    growth_pct    = (current_value / entry_value - 1) * 100
+    growth_pct    = (current_value / entry_value - 1) * 100,
+    priced        = sum(is.finite(metrics$current_price)),
+    total         = nrow(metrics)
   )
 }

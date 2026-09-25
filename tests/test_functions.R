@@ -34,7 +34,7 @@ portfolio_holdings <- data.table(
 
 source("R/snapshots.R"); source("R/watchlist.R"); source("R/marketdata.R")
 source("R/exante_api.R"); source("R/portfolio.R"); source("R/forecast.R")
-source("R/auth_ad.R")
+source("R/auth_ad.R"); source("R/ui_kit.R")
 
 FAILED <- 0L
 ok <- function(what, cond) {
@@ -116,7 +116,40 @@ ok("логин нормализуется к короткому",     identical(
 ok("bind пробует UPN и NETBIOS",
    identical(ad_bind_candidates("s.gumerov"), c("s.gumerov@ad.dtwin.ru", "AD\\s.gumerov")))
 
-cat("== 6. Сборка интерфейса ==\n")
+cat("== 6. Нет котировок -> прочерк, а НЕ ноль ==\n")
+# 25.09.2026 marketdata.app упёрся в лимит кредитов, все цены пришли NA, и
+# стенд показал «стоимость $0, рост −100%» — уверенную неправду. Виноват был
+# na.rm = TRUE в сумме: он превращает «неизвестно» в ноль. Проверка ловит
+# именно это: итоги обязаны быть NA, а форматирование — давать прочерк.
+noprice <- data.table(
+  ticker = c("GS", "GE"), quantity = c(5, 16),
+  entry_price = c(995.72, 318.28), current_price = NA_real_,
+  entry_value = c(5, 16) * c(995.72, 318.28), current_value = NA_real_
+)
+sp <- summarize_portfolio(noprice)
+ok("стоимость без цен = NA, не 0",   is.na(sp$current_value))
+ok("рост без цен = NA, не -100%",    is.na(sp$growth_pct))
+ok("посчитано, по скольким есть цена", identical(sp$priced, 0L) && identical(sp$total, 2L))
+# Частичные данные тоже не должны «дорисовываться» нулём.
+part <- data.table::copy(noprice)
+part[1, `:=`(current_price = 1000, current_value = 5000)]
+ok("часть цен известна -> итог всё равно NA",
+   is.na(summarize_portfolio(part)$current_value))
+ok("форматирование NA даёт прочерк",
+   identical(fmt_money(NA_real_), "\u2014") &&
+   identical(fmt_pct(NA_real_), "\u2014") &&
+   identical(fmt_pp(NA_real_), "\u2014"))
+# Источник обязан УМЕТЬ сказать «нет данных»: при ответе про лимит кредитов
+# md_status_text() возвращает причину, а не NULL.
+local({
+  md_note_error(list(error = "marketdata_http_error", status = 429,
+                     message = "You've reached your API credit limit."))
+  ok("причина сбоя источника поднимается в интерфейс",
+     grepl("лимит", md_status_text() %||% ""))
+  .MD_STATE$last_error <- NULL
+})
+
+cat("== 7. Сборка интерфейса ==\n")
 # Гейт против класса дефектов «экран не собрался», который до выкладки ничем
 # не виден: перекрытые имена функций (jsonlite::validate поверх shiny::validate,
 # httr::config поверх plotly::config), пакет, нужный при СБОРКЕ UI, но
