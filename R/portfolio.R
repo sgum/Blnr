@@ -46,6 +46,7 @@ get_portfolio_positions <- function(as_of = Sys.Date(), ledger = portfolio_ledge
         entry_price   = pos$avg_price,
         current_price = NA_real_,
         purchase_date = pos$opened_date,
+        last_buy_date = pos$last_buy_date,
         source        = "exante"
       ))
     }
@@ -53,14 +54,16 @@ get_portfolio_positions <- function(as_of = Sys.Date(), ledger = portfolio_ledge
     return(data.table::data.table(
       ticker = character(), quantity = numeric(), entry_price = numeric(),
       current_price = numeric(), purchase_date = as.Date(character()),
-      source = character()
+      last_buy_date = as.Date(character()), source = character()
     ))
   }
 
   dt <- data.table::copy(portfolio_holdings)
   dt[, current_price := NA_real_]
   dt[, source := "manual"]
-  dt[, .(ticker, quantity, entry_price, current_price, purchase_date, source)]
+  dt[, last_buy_date := purchase_date]
+  dt[, .(ticker, quantity, entry_price, current_price, purchase_date,
+         last_buy_date, source)]
 }
 
 # Источник котировок — marketdata.app (R/marketdata.R), НЕ Yahoo.
@@ -270,8 +273,8 @@ portfolio_value_series <- function(ledger, sessions, currency = "USD") {
 # на графике вместо тихо заниженной линии.
 portfolio_deviation_series <- function(ledger, forecast, sessions) {
   empty <- data.table::data.table(
-    date = as.Date(character()), fact_pct = numeric(),
-    model_pct = numeric(), dev_pp = numeric()
+    date = as.Date(character()), fact_pnl = numeric(),
+    model_pnl = numeric(), dev_money = numeric(), invested = numeric()
   )
   if (nrow(ledger) == 0 || length(sessions) == 0) return(empty)
   if (is.null(forecast) || nrow(forecast) == 0) return(empty)
@@ -281,18 +284,17 @@ portfolio_deviation_series <- function(ledger, forecast, sessions) {
     pos <- ledger_positions_at(ledger, d)[quantity > 0]
     if (nrow(pos) == 0) return(NULL)
     px <- vapply(pos$ticker, function(tk) md_close_on_date(tk, d), numeric(1))
+    anchor <- data.table::fifelse(is.na(pos$last_buy_date),
+                                  FORECAST_BASELINE_DATE, pos$last_buy_date)
     mdl <- vapply(seq_len(nrow(pos)), function(i) {
-      forecast_between(forecast, pos$ticker[i],
-                       if (is.na(pos$opened_date[i])) FORECAST_BASELINE_DATE
-                       else pos$opened_date[i], d)
+      forecast_between(forecast, pos$ticker[i], anchor[i], d)
     }, numeric(1))
-    entry <- sum(pos$cost)
-    if (!is.finite(entry) || entry <= 0) return(NULL)
-    fact  <- sum(pos$quantity * px)
-    model <- sum(pos$cost * (1 + mdl / 100))
-    f <- (fact / entry - 1) * 100
-    m <- (model / entry - 1) * 100
-    data.table::data.table(date = d, fact_pct = f, model_pct = m, dev_pp = f - m)
+    invested <- sum(pos$cost)
+    if (!is.finite(invested) || invested <= 0) return(NULL)
+    fact  <- sum(pos$quantity * px) - invested
+    model <- sum(pos$cost * (mdl / 100))
+    data.table::data.table(date = d, fact_pnl = fact, model_pnl = model,
+                           dev_money = fact - model, invested = invested)
   })
   rows <- rows[!vapply(rows, is.null, logical(1))]
   if (length(rows) == 0) return(empty)

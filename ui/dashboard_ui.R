@@ -210,6 +210,14 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
   background:var(--surface);border-radius:6px;font-size:11px;font-weight:700;
   color:var(--dim);cursor:pointer;white-space:nowrap}
 .btn-buy:hover{background:var(--ok);border-color:var(--ok);color:#fff}
+.btn-sellall{height:22px;padding:0 9px;border:1px solid var(--border);
+  background:var(--surface);border-radius:6px;font-size:11px;font-weight:700;
+  color:var(--dim);cursor:pointer;white-space:nowrap}
+.btn-sellall:hover{background:var(--bad);border-color:var(--bad);color:#fff}
+.btn-sellall{height:22px;padding:0 9px;border:1px solid var(--border);
+  background:var(--surface);border-radius:6px;font-size:11px;font-weight:700;
+  color:var(--dim);cursor:pointer;white-space:nowrap}
+.btn-sellall:hover{background:var(--bad);border-color:var(--bad);color:#fff}
 .btn-trade{height:30px;padding:0 14px;border:1px solid var(--orange-dk);
   background:var(--orange);color:var(--on-orange);border-radius:6px;
   font-size:12.5px;font-weight:800;cursor:pointer}
@@ -273,21 +281,14 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
 
 # Полоса времени. Правый край шкалы — фактическая дата (последняя сессия в
 # хранилище), слева от неё ретроспектива на BLNR_TIMELINE_DAYS сессий.
-timelineUI <- function(forecast_dates = NULL) {
-  past <- store_sessions_window(BLNR_TIMELINE_DAYS)
+timelineUI <- function(past, future = as.Date(character())) {
   if (length(past) == 0) {
     # Хранилище пусто — ползунку не из чего строить ось. Рисовать пустой
     # виджет незачем: о причине уже сказано плашкой в шапке.
     return(NULL)
   }
-  # Будущее берём из горизонта модели: дальше последней сессии показывать
-  # можно только то, что прогноз обещает, и ровно до той даты, до которой он
-  # есть. Выдумывать шкалу за пределами прогноза нельзя — там нет ничего.
-  future <- if (length(forecast_dates)) {
-    fd <- sort(unique(as.Date(forecast_dates)))
-    utils::head(fd[fd > max(past)], BLNR_FUTURE_DAYS)
-  } else as.Date(character())
-
+  # Ось строит сервер (timeline_axis): ползунок и точки сделок обязаны мерить
+  # ОДНОЙ линейкой, иначе точки нормируются на другую длину и съезжают.
   all_dates <- c(past, future)
   labels <- format(all_dates, "%d.%m.%Y")
   fact <- format(max(past), "%d.%m.%Y")
@@ -343,11 +344,21 @@ dashboardUI <- function() {
         uiOutput("hd_forecast", inline = TRUE),
         tags$span(class = "sp"),
         uiOutput("hd_updated", inline = TRUE),
+        # Порядок кнопок = порядок работы владельца: сначала выгрузить ряды
+        # для внешнего расчёта, потом загрузить обратно его результат. Шаги
+        # пронумерованы, чтобы последовательность читалась с экрана, а не
+        # держалась в голове.
+        # Третьим шагом здесь должен встать импорт предлагаемого к покупке
+        # портфеля. Его НЕТ сознательно: присланный образец
+        # («Portfolio 2026-09.13.xlsx») оказался не списком бумаг к покупке, а
+        # той же матрицей mean/var, что и прогноз, — 26 инструментов на 527
+        # шагов. Строить покупку на догадке о смысле файла нельзя, нужен
+        # образец того, что считать целевым портфелем.
         tags$div(
           class = "seg",
-          actionButton("portfolio_refresh", "Обновить"),
-          actionButton("open_forecast", "Прогноз…"),
-          downloadButton("export_xlsx", "Excel", class = "dl")
+          downloadButton("export_xlsx", "1 · Ряды в Excel", class = "dl"),
+          actionButton("open_forecast", "2 · Прогноз\u2026"),
+          actionButton("portfolio_refresh", "Обновить")
         ),
         uiOutput("logout_ui", inline = TRUE)
       ),

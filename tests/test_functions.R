@@ -402,6 +402,20 @@ local({
   pr <- ledger_positions_at(led_re, as.Date("2026-09-01"))
   ok("дата открытия — текущего лота, а не первой сделки",
      identical(pr[ticker == "IBM", opened_date], as.Date("2026-08-01")))
+  # Отсчёт ведётся от ПОСЛЕДНЕЙ покупки: докупка меняет позицию, и мерить
+  # прогноз от входа, которого в ней уже нет, значит сравнивать с чужим
+  # ожиданием.
+  led_more <- rbindlist(list(
+    led_re,
+    leg(36, "2026-08-20", "TRADE", "IBM.NYSE", "IBM.NYSE",  2, 200, "r4"),
+    leg(37, "2026-08-20", "TRADE", "IBM.NYSE", "USD",    -400,  NA, "r4")))
+  pm <- ledger_positions_at(led_more, as.Date("2026-09-01"))
+  ok("докупка сдвигает дату последней покупки",
+     identical(pm[ticker == "IBM", last_buy_date], as.Date("2026-08-20")))
+  ok("а дата открытия лота остаётся прежней",
+     identical(pm[ticker == "IBM", opened_date], as.Date("2026-08-01")))
+  ok("средняя цена усредняется по всему лоту",
+     isTRUE(all.equal(pm[ticker == "IBM", avg_price], (450 + 400) / 5)))
   ok("первая сделка по бумаге сохранена отдельно",
      identical(pr[ticker == "IBM", first_date], as.Date("2026-05-01")))
   ok("после полной продажи позиции нет",
@@ -485,8 +499,13 @@ local({
   # значит за период владения — (1.21/1.10 - 1) = 10%, а не 21%.
   ok("вход позже базы -> прогноз приводится к дате входа",
      isTRUE(all.equal(forecast_between(fc, "GS", as.Date("2026-09-18"), as.Date("2026-09-25")), 10)))
-  ok("вход раньше базы -> считаем от базы",
+  ok("вход раньше базы -> считаем от базы файла",
      isTRUE(all.equal(forecast_between(fc, "GS", as.Date("2026-01-01"), as.Date("2026-09-25")), 21)))
+  # Нулевой срок владения: модель ничего не обещала, и 0% тут был бы враньём.
+  ok("нулевой срок владения -> NA, а не 0%",
+     is.na(forecast_between(fc, "GS", as.Date("2026-09-25"), as.Date("2026-09-25"))))
+  ok("дата раньше начала файла -> NA",
+     is.na(forecast_between(fc, "GS", as.Date("2026-01-01"), as.Date("2026-05-01"))))
   ok("неизвестный тикер -> NA",
      is.na(forecast_between(fc, "ZZZ", as.Date("2026-09-18"), as.Date("2026-09-25"))))
 
@@ -660,7 +679,46 @@ local({
      identical(o$status[2], "отказ"))
 })
 
-cat("== 14. Выгрузка в типовом формате мониторинга ==\n")
+cat("== 14. Результат против модели — в деньгах ==\n")
+# В процентах это была доходность ВЛОЖЕННОГО В БУМАГИ: одна акция за $285,
+# упавшая на 20%, рисовала «портфель −20%», хотя на счёте лежали ещё десятки
+# тысяч наличными. В деньгах подменить смысл нечем.
+local({
+  tmpstore <- file.path(tempdir(), paste0("dev_", as.integer(runif(1, 1e6, 9e6))))
+  old_dir <- BLNR_STORE_DIR; BLNR_STORE_DIR <<- tmpstore
+  on.exit({ BLNR_STORE_DIR <<- old_dir; unlink(tmpstore, recursive = TRUE) }, add = TRUE)
+  sess <- seq(as.Date("2026-06-01"), by = "day", length.out = 12)
+  store_write_candles("IBM", data.table(
+    date = sess, open = 1, high = 2, low = 0.5,
+    close = c(rep(300, 6), rep(240, 6)), volume = NA_real_))
+
+  leg <- function(i, d, type, sym, asset, amount, price = NA_real_, ord = "") {
+    data.table(id = i, value_date = as.Date(d), type = type, symbol = sym,
+               asset = asset, amount = amount, price = price, order_id = ord)
+  }
+  led <- rbindlist(list(
+    leg(1, "2026-05-01", "FUNDING/WITHDRAWAL", "", "USD", 50000),
+    leg(2, "2026-06-02", "TRADE", "IBM.NYSE", "IBM.NYSE", 1, 300, "i1"),
+    leg(3, "2026-06-02", "TRADE", "IBM.NYSE", "USD", -300, NA, "i1")
+  ))
+  fc <- data.table(date = sess, ticker = "IBM",
+                   forecast_growth_pct = rep(0, length(sess)))
+  d <- portfolio_deviation_series(led, fc, sess)
+  ok("ряд считается", nrow(d) > 0)
+  last <- d[.N]
+  # Одна акция с $300 до $240 — это минус ШЕСТЬДЕСЯТ ДОЛЛАРОВ, а не минус 20%
+  # портфеля, в котором лежит ещё 49700 наличными.
+  ok("убыток выражен деньгами", isTRUE(all.equal(last$fact_pnl, -60)))
+  ok("вложено в бумаги учтено отдельно", isTRUE(all.equal(last$invested, 300)))
+  ok("модель тоже в деньгах", isTRUE(all.equal(last$model_pnl, 0)))
+  ok("разница = факт минус модель",
+     isTRUE(all.equal(last$dev_money, last$fact_pnl - last$model_pnl)))
+  # Проценты из ряда убраны сознательно: именно они и вводили в заблуждение.
+  ok("процентных колонок в ряде нет",
+     !any(c("fact_pct", "model_pct", "dev_pp") %in% names(d)))
+})
+
+cat("== 15. Выгрузка в типовом формате мониторинга ==\n")
 # Формат разобран по эталону владельца («OptionActual <дата>.xlsx»). Проверка
 # держит его строение: если лист «Реестр» переедет или у листа инструмента
 # сдвинется блок данных, файл перестанет открываться рабочими формулами —
@@ -721,7 +779,7 @@ local({
      any(grepl("нет данных", as.character(unlist(reg2)))))
 })
 
-cat("== 15. Сборка интерфейса ==\n")
+cat("== 16. Сборка интерфейса ==\n")
 # Гейт против класса дефектов «экран не собрался», который до выкладки ничем
 # не виден: перекрытые имена функций (jsonlite::validate поверх shiny::validate,
 # httr::config поверх plotly::config), пакет, нужный при СБОРКЕ UI, но

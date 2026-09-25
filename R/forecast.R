@@ -160,12 +160,17 @@ add_forecast_to_metrics <- function(dt, forecast, as_of = Sys.Date()) {
   # Сравнение ЗА ПЕРИОД ВЛАДЕНИЯ — основное на экране. «От базы прогноза»
   # остаётся как характеристика бумаги, но портфель по нему судить нельзя:
   # позиция, купленная позже базы, присвоила бы себе чужой рост.
-  if ("purchase_date" %in% names(dt)) {
+  # Точка отсчёта — дата ПОСЛЕДНЕЙ покупки бумаги, а не фиксированная база и
+  # не открытие лота: докупка меняет позицию, и мерить прогноз от входа,
+  # которого в ней уже нет, значит сравнивать с чужим ожиданием.
+  anchor_col <- if ("last_buy_date" %in% names(dt)) "last_buy_date"
+                else if ("purchase_date" %in% names(dt)) "purchase_date" else NA
+  if (!is.na(anchor_col)) {
     dt[, forecast_since_entry_pct := mapply(
       function(tk, d) forecast_between(forecast, tk,
                                        if (is.na(d)) FORECAST_BASELINE_DATE else d,
                                        as_of),
-      ticker, purchase_date)]
+      ticker, get(anchor_col))]
     dt[, dev_since_entry_pp := growth_pct - forecast_since_entry_pct]
   } else {
     dt[, forecast_since_entry_pct := NA_real_]
@@ -190,10 +195,22 @@ add_forecast_to_metrics <- function(dt, forecast, as_of = Sys.Date()) {
 # просто нет, и делать вид, что есть, нельзя.
 forecast_between <- function(forecast, tkr, from, to) {
   if (is.null(forecast) || nrow(forecast) == 0) return(NA_real_)
-  start <- max(as.Date(from), FORECAST_BASELINE_DATE, na.rm = TRUE)
-  f1 <- forecast_for_date(forecast, tkr, to)
+  sub <- forecast[ticker == tkr]
+  if (nrow(sub) == 0) return(NA_real_)
+  # Начало отсчёта ограничиваем НАЧАЛОМ САМОГО ФАЙЛА, а не глобальной
+  # константой: у каждого модельного воркбука своя база, и константа делала
+  # вид, что знает чужую. Раньше прогноз, начинающийся в июне, обрезался
+  # сентябрьской константой и молча становился NA.
+  base <- min(sub$date)
+  start <- max(as.Date(from), base, na.rm = TRUE)
+  target <- as.Date(to)
+  # Нулевой срок владения — модели нечего сказать. Возвращать 0% нельзя: ноль
+  # читается как «модель обещала топтание на месте», хотя она не обещала
+  # ничего. Столбец, полный нулей, именно так и выглядел на экране.
+  if (!is.finite(as.numeric(start)) || start >= target) return(NA_real_)
+  f1 <- forecast_for_date(forecast, tkr, target)
   if (is.na(f1)) return(NA_real_)
-  f0 <- if (start <= FORECAST_BASELINE_DATE) 0 else forecast_for_date(forecast, tkr, start)
+  f0 <- if (start <= base) 0 else forecast_for_date(forecast, tkr, start)
   if (is.na(f0)) f0 <- 0
   ((1 + f1 / 100) / (1 + f0 / 100) - 1) * 100
 }

@@ -96,6 +96,7 @@ ledger_positions_at <- function(ledger, as_of = Sys.Date(), currency = "USD") {
   empty <- data.table::data.table(
     symbol = character(), ticker = character(), quantity = numeric(),
     cost = numeric(), avg_price = numeric(), opened_date = as.Date(character()),
+    last_buy_date = as.Date(character()),
     first_date = as.Date(character()), last_date = as.Date(character())
   )
   ev <- ledger_events(ledger, currency)
@@ -106,7 +107,7 @@ ledger_positions_at <- function(ledger, as_of = Sys.Date(), currency = "USD") {
 
   out <- lapply(split(ev, ev$symbol), function(e) {
     data.table::setorder(e, value_date)
-    qty <- 0; cost <- 0; opened <- as.Date(NA)
+    qty <- 0; cost <- 0; opened <- as.Date(NA); last_buy <- as.Date(NA)
     for (i in seq_len(nrow(e))) {
       dq <- e$qty[i]; dc <- e$cash[i]
       # Дата открытия ТЕКУЩЕГО лота, а не первой сделки по бумаге. AMD куплена
@@ -117,6 +118,10 @@ ledger_positions_at <- function(ledger, as_of = Sys.Date(), currency = "USD") {
       if (dq > 0) {
         qty <- qty + dq
         cost <- cost + (-dc)          # покупка: деньги ушли, стоимость выросла
+        # Дата ПОСЛЕДНЕЙ покупки: от неё отсчитывается сравнение с моделью.
+        # Докупка сдвигает точку отсчёта — иначе прогноз мерился бы от входа,
+        # которого в текущем виде позиции уже нет.
+        last_buy <- e$value_date[i]
       } else if (dq < 0 && qty > 0) {
         frac <- min(1, (-dq) / qty)   # продажа: доля закрытого лота
         cost <- cost * (1 - frac)
@@ -124,14 +129,16 @@ ledger_positions_at <- function(ledger, as_of = Sys.Date(), currency = "USD") {
       } else {
         qty <- qty + dq
       }
-      if (abs(qty) < 1e-9) opened <- as.Date(NA)   # лот закрыт полностью
+      if (abs(qty) < 1e-9) {                        # лот закрыт полностью
+        opened <- as.Date(NA); last_buy <- as.Date(NA)
+      }
     }
     data.table::data.table(
       symbol = e$symbol[1],
       ticker = exante_symbol_to_ticker(e$symbol[1]),
       quantity = qty, cost = cost,
       avg_price = if (qty > 0) cost / qty else NA_real_,
-      opened_date = opened,
+      opened_date = opened, last_buy_date = last_buy,
       first_date = min(e$value_date), last_date = max(e$value_date)
     )
   })
