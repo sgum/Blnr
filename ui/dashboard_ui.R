@@ -154,6 +154,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
 /* uiOutput оборачивает содержимое в свой div: без display:contents он стал бы
    единственной ячейкой грида и ломал раскладку ряда. */
 .blnr-row--top>.shiny-html-output,.blnr-row--bot>.shiny-html-output{display:contents}
+.blnr-col>.shiny-html-output{display:contents}
 .blnr-row--bot{grid-template-columns:repeat(auto-fit,minmax(0,1fr))}
 
 /* --- карточка ---------------------------------------------------------- */
@@ -175,6 +176,44 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
 .bd--plot>div,.bd--plot .plotly,.bd--plot .html-widget{height:100%!important}
 .bd--flush{padding:0;display:flex;flex-direction:column}
 .empty{padding:14px 12px;font-size:12px;color:var(--dim)}
+/* --- справочник наблюдения --- */
+.wl{display:flex;flex-direction:column;min-height:0;height:100%}
+.wl-add{flex:none;display:flex;gap:6px;align-items:flex-end;padding:8px 10px;
+  border-bottom:1px solid var(--border);background:var(--muted)}
+.wl-add .shiny-input-container{margin:0}
+.wl-add input.form-control{height:26px;font-size:11.5px;padding:3px 8px;
+  border-radius:6px;border-color:var(--border)}
+.wl-add label{font-size:10.5px;color:var(--dim);font-weight:700;margin:0 0 2px}
+.wl-list{flex:1 1 auto;min-height:0;overflow:auto}
+.wl-list table{width:100%;border-collapse:collapse}
+.wl-list th{position:sticky;top:0;background:var(--muted);z-index:2;
+  font-size:10.5px;color:var(--dim);font-weight:700;text-align:left;
+  padding:4px 8px;border-bottom:1px solid var(--border)}
+.wl-list td{padding:3px 8px;border-bottom:1px solid #f0f2f5;height:24px;
+  font-size:11.5px}
+.wl-list td.r{text-align:right}
+.wl-list tr:hover{background:#fff7e6}
+.wl-del{border:0;background:transparent;color:var(--faint);cursor:pointer;
+  font-size:13px;line-height:1;padding:0 4px}
+.wl-del:hover{color:var(--bad)}
+.wl-msg{flex:none;padding:6px 10px;font-size:11.5px;border-top:1px solid var(--border)}
+.wl-msg.ok{color:var(--ok);background:#f1f8f1}
+.wl-msg.bad{color:var(--bad);background:#fdf1f1}
+.wl-held{display:inline-block;width:7px;height:7px;border-radius:50%;
+  background:var(--ok);margin-right:6px;vertical-align:middle}
+/* --- сделки --- */
+.tr-btn{border:1px solid var(--border);background:var(--surface);border-radius:4px;
+  width:20px;height:18px;line-height:1;font-size:13px;font-weight:700;
+  color:var(--dim);cursor:pointer;padding:0}
+.tr-btn.sell:hover{background:var(--bad);border-color:var(--bad);color:#fff}
+.btn-buy{height:22px;padding:0 9px;border:1px solid var(--border);
+  background:var(--surface);border-radius:6px;font-size:11px;font-weight:700;
+  color:var(--dim);cursor:pointer;white-space:nowrap}
+.btn-buy:hover{background:var(--ok);border-color:var(--ok);color:#fff}
+.btn-trade{height:30px;padding:0 14px;border:1px solid var(--orange-dk);
+  background:var(--orange);color:var(--on-orange);border-radius:6px;
+  font-size:12.5px;font-weight:800;cursor:pointer}
+.btn-trade:hover{background:var(--orange-dk);color:#fff}
 .empty b{color:var(--text)}
 
 /* --- подсказка под i --------------------------------------------------- */
@@ -328,30 +367,7 @@ dashboardUI <- function() {
         tags$div(
           class = "blnr-row blnr-row--top",
           uiOutput("left_col"),
-          panel(
-            "График инструмента",
-            tip = paste(
-              "Дневные свечи за", WATCHLIST_RETRO_DAYS, "торговых дней —",
-              "та же глубина ретроспективы, что и во внешнем прогнозировании.",
-              "Пунктир — траектория цены по модели от базы прогноза;",
-              "горизонталь — цена входа, если бумага в портфеле."
-            ),
-            # Выбор задаётся прямо в разметке, а не updateSelectInput из
-            # сервера: обновление, отправленное до того, как виджет появился
-            # на клиенте, теряется — график остаётся пустым.
-            right = tags$div(
-              style = "width:240px",
-              selectInput(
-                "sel_ticker", NULL, width = "100%",
-                choices = stats::setNames(
-                  as.list(watchlist_active()$ticker),
-                  paste0(watchlist_active()$ticker, " · ", watchlist_active()$name_ru)),
-                selected = portfolio_holdings$ticker[1]
-              )
-            ),
-            body_class = "bd--plot",
-            plotlyOutput("chart_instrument", height = "100%")
-          )
+          uiOutput("right_col")
         ),
         tags$div(
           class = "blnr-row blnr-row--bot",

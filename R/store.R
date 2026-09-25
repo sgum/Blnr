@@ -227,3 +227,69 @@ store_ledger_updated <- function() {
   if (!file.exists(f)) return(NULL)
   file.mtime(f)
 }
+
+# --- Реестр наблюдения ------------------------------------------------------
+# Список инструментов перестал быть константой в коде: его правит владелец с
+# экрана. Хранится рядом с рядами цен, потому что это тоже накопительные
+# данные — переживают выкатку и общие для всех сессий стенда.
+#
+# Файл отсутствует — работаем на зашитом наборе (WATCHLIST в R/watchlist.R).
+# Так стенд поднимается на чистом хранилище и не требует ручного посева.
+store_watchlist_path <- function() file.path(BLNR_STORE_DIR, "watchlist.csv")
+
+store_read_watchlist <- function() {
+  f <- store_watchlist_path()
+  if (!file.exists(f)) return(NULL)
+  dt <- tryCatch(data.table::fread(f), error = function(e) NULL)
+  if (is.null(dt) || nrow(dt) == 0 || !"ticker" %in% names(dt)) return(NULL)
+  for (col in c("ticker", "name_model", "name_ru")) {
+    if (!col %in% names(dt)) dt[[col]] <- NA_character_
+    dt[[col]] <- as.character(dt[[col]])
+  }
+  if (!"added_at" %in% names(dt)) dt[, added_at := as.Date(NA)]
+  dt[, added_at := as.Date(added_at)]
+  dt[!is.na(ticker) & nzchar(ticker)]
+  dt[]
+}
+
+store_write_watchlist <- function(dt) {
+  dir.create(BLNR_STORE_DIR, showWarnings = FALSE, recursive = TRUE)
+  data.table::setorder(dt, ticker)
+  data.table::fwrite(dt[, .(ticker, name_model, name_ru, added_at)],
+                     store_watchlist_path())
+  invisible(TRUE)
+}
+
+# --- Журнал поручений -------------------------------------------------------
+# Каждое поручение, отправленное со стенда, записывается здесь: что, сколько,
+# когда, кто и чем ответил брокер. Без этого журнала «я точно нажимал» и «оно
+# точно ушло» не разрешаются ничем, а реестр операций Exante обновляется лишь
+# раз в сутки.
+store_orders_path <- function() file.path(BLNR_STORE_DIR, "orders.csv")
+
+store_read_orders <- function() {
+  f <- store_orders_path()
+  empty <- data.table::data.table(
+    at = as.POSIXct(character()), user = character(), side = character(),
+    symbol = character(), quantity = numeric(), status = character(),
+    detail = character()
+  )
+  if (!file.exists(f)) return(empty)
+  dt <- tryCatch(data.table::fread(f), error = function(e) NULL)
+  if (is.null(dt) || nrow(dt) == 0) return(empty)
+  dt[, at := as.POSIXct(at, tz = "")]
+  dt[]
+}
+
+store_append_order <- function(user, side, symbol, quantity, status, detail = "") {
+  dir.create(BLNR_STORE_DIR, showWarnings = FALSE, recursive = TRUE)
+  row <- data.table::data.table(
+    at = Sys.time(), user = as.character(user), side = as.character(side),
+    symbol = as.character(symbol), quantity = as.numeric(quantity),
+    status = as.character(status),
+    detail = substr(as.character(detail), 1, 500)
+  )
+  data.table::fwrite(row, store_orders_path(),
+                     append = file.exists(store_orders_path()))
+  invisible(TRUE)
+}

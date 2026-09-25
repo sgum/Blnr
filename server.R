@@ -512,6 +512,9 @@ shinyServer(function(input, output, session) {
         "процентных пунктах. Последняя колонка — движение самой бумаги от ",
         "базы прогноза, безотносительно того, когда мы её купили. ",
         "Клик по строке открывает её график справа."),
+      right = if (user_can_trade(USER$login) && exante_has_credentials() &&
+                  !is_future() && identical(sel_date(), fact_date()))
+                actionButton("buy_open", "+ Купить", class = "btn-buy"),
       body_class = "bd--flush",
       uiOutput("pos_table")
     )
@@ -558,6 +561,10 @@ shinyServer(function(input, output, session) {
     req(nrow(m) > 0)
     sel <- input$sel_ticker %||% ""
     has_fc <- any(is.finite(m$forecast_pct))
+    # Торговать можно только сейчас: на прошлой или будущей дате поручение
+    # бессмысленно, и кнопку там показывать нельзя.
+    can_trade <- user_can_trade(USER$login) && exante_has_credentials() &&
+                 !is_future() && identical(sel_date(), fact_date())
 
     num <- function(x, f) {
       tags$td(class = if (!is.finite(x)) "mut" else if (x >= 0) "pos" else "neg", f(x))
@@ -587,7 +594,17 @@ shinyServer(function(input, output, session) {
         num(r$growth_pct, fmt_pct),
         if (has_fc) num(r$forecast_since_entry_pct, fmt_pct),
         if (has_fc) num(r$dev_since_entry_pp, fmt_pp),
-        num(r$growth_from_base_pct, fmt_pct)
+        num(r$growth_from_base_pct, fmt_pct),
+        # Продажа только на фактической дате: торговать «на прошлую сессию»
+        # нельзя, а кнопка на ней читалась бы как рабочая.
+        tags$td(class = "r",
+          if (can_trade)
+            tags$button(class = "tr-btn sell", title = paste("Продать", r$ticker),
+              onclick = sprintf(
+                "event.stopPropagation();Shiny.setInputValue('trade_open','sell|%s',{priority:'event'})",
+                r$ticker),
+              "\u2212")
+          else tags$span(class = "mut", "\u2014"))
       )
     })
 
@@ -602,7 +619,8 @@ shinyServer(function(input, output, session) {
         tags$th("Стоимость"), tags$th("Вес"), tags$th("От покупки"),
         if (has_fc) tags$th("Модель"),
         if (has_fc) tags$th("Δ"),
-        tags$th(paste0("Бумага от ", base_lab))
+        tags$th(paste0("Бумага от ", base_lab)),
+        tags$th("")
       )),
       tags$tbody(rows),
       tags$tfoot(tags$tr(
@@ -614,9 +632,290 @@ shinyServer(function(input, output, session) {
                             if (is.null(vf)) "\u2014" else fmt_pct(vf$fcst_pct)),
         if (has_fc) tags$td(class = if (is.null(vf)) "mut" else tone_of(vf$dev_pp),
                             if (is.null(vf)) "\u2014" else fmt_pp(vf$dev_pp)),
-        tags$td()
+        tags$td(), tags$td()
       ))
     ))
+  })
+
+  # --- Сделки ---------------------------------------------------------------
+  #
+  # ГРАНИЦА. Поручение уходит на боевой счёт ТОЛЬКО из обработчика
+  # input$trade_confirm, то есть по явному нажатию владельца в окне
+  # подтверждения, где показано точное тело запроса. Ни один автоматический
+  # путь — реактив, таймер, стартовый observe — не вызывает
+  # exante_place_order() с apply = TRUE. Это правило, а не удобство: стенд
+  # распоряжается реальными деньгами.
+  trade_req <- reactiveVal(NULL)
+
+  # Открыть окно подтверждения. Здесь НИЧЕГО не отправляется.
+  # Покупка из шапки карточки: бумагу выбираем ту, что открыта на графике.
+  observeEvent(input$buy_open, {
+    req(user_can_trade(USER$login))
+    tk <- input$sel_ticker
+    req(!is.null(tk), nzchar(tk))
+    session$sendInputMessage("trade_open", list(value = paste0("buy|", tk)))
+    shinyjs::runjs(sprintf(
+      "Shiny.setInputValue('trade_open','buy|%s',{priority:'event'})", tk))
+  })
+
+  observeEvent(input$trade_open, {
+    req(user_can_trade(USER$login))
+    req(input$trade_open)
+    parts <- strsplit(input$trade_open, "|", fixed = TRUE)[[1]]
+    req(length(parts) >= 2)
+    side <- parts[1]; tk <- parts[2]
+    m <- portfolio_metrics()
+    row <- m[ticker == tk]
+    max_qty <- if (nrow(row)) row$quantity_at[1] else 0
+    px <- if (nrow(row)) row$price_at[1] else md_last_price(tk)
+    trade_req(list(side = side, ticker = tk, max_qty = max_qty, price = px))
+    showModal(modalDialog(
+      title = paste0(if (side == "buy") "Покупка " else "Продажа ", tk),
+      size = "m", easyClose = TRUE,
+      footer = tagList(
+        modalButton("Отмена"),
+        actionButton("trade_confirm",
+                     if (side == "buy") "Купить по рынку" else "Продать по рынку",
+                     class = "btn-trade")
+      ),
+      tags$p(style = "font-size:12px;color:#646b78",
+             "Поручение рыночное, внутридневное. Цена исполнения будет ",
+             "биржевой на момент приёма — показанная ниже это последняя ",
+             "известная цена закрытия, а не гарантия."),
+      numericInput("trade_qty", "Количество",
+                   value = if (side == "sell" && max_qty > 0) max_qty else 1,
+                   min = 1, step = 1,
+                   max = if (side == "sell") max(1, max_qty) else NA),
+      if (side == "sell")
+        tags$p(style = "font-size:11.5px;color:#646b78",
+               sprintf("В портфеле: %g шт.", max_qty)),
+      uiOutput("trade_preview")
+    ))
+  })
+
+  output$trade_preview <- renderUI({
+    r <- trade_req(); req(r)
+    qty <- suppressWarnings(as.numeric(input$trade_qty))
+    sym <- exante_symbol_for_ticker(r$ticker, ledger = ledger_now())
+    if (is.na(sym)) {
+      return(tags$div(class = "wl-msg bad",
+        paste0("Не знаю биржевой код для ", r$ticker,
+               ". Он появится после первой сделки по этой бумаге на счёте — ",
+               "гадать суффикс нельзя, GS.NYSE и GS.NASDAQ это разные ",
+               "инструменты.")))
+    }
+    if (!is.finite(qty) || qty <= 0) {
+      return(tags$div(class = "wl-msg bad", "Количество должно быть положительным."))
+    }
+    if (identical(r$side, "sell") && qty > r$max_qty) {
+      return(tags$div(class = "wl-msg bad",
+        sprintf("В портфеле только %g шт. Продать больше нельзя.", r$max_qty)))
+    }
+    est <- if (is.finite(r$price)) qty * r$price else NA_real_
+    tags$div(
+      class = "wl-msg ok",
+      tags$div(tags$b(sym), " \u00b7 ",
+               if (identical(r$side, "buy")) "покупка" else "продажа",
+               " ", qty, " шт."),
+      tags$div(style = "margin-top:4px",
+               "Ориентировочно ", tags$b(fmt_money(est)),
+               " по последней цене ", fmt_money(r$price, 2), ".")
+    )
+  })
+
+  # ЕДИНСТВЕННОЕ место, отправляющее поручение.
+  observeEvent(input$trade_confirm, {
+    # ПРАВО ТОРГОВАТЬ проверяется здесь, а не только скрытием кнопок: разметку
+    # подделывают из консоли браузера за секунду, а это боевой счёт. Смотреть
+    # портфель может каждый из белого списка, распоряжаться им — только
+    # владелец (BLNR_TRADERS, по умолчанию s.gumerov).
+    if (!user_can_trade(USER$login)) {
+      cat(sprintf("[TRADE] ОТКАЗ В ПРАВЕ login=%s %s\n",
+                  USER$login %||% "?", format(Sys.time())))
+      store_append_order(USER$login %||% "?", "?", "?", 0, "нет права",
+                         "пользователь не в списке BLNR_TRADERS")
+      removeModal()
+      showNotification("Распоряжаться счётом может только его владелец.",
+                        type = "error", duration = 10)
+      return(invisible(NULL))
+    }
+    r <- trade_req(); req(r)
+    qty <- suppressWarnings(as.numeric(input$trade_qty))
+    sym <- exante_symbol_for_ticker(r$ticker, ledger = ledger_now())
+    bad <- if (is.na(sym)) "неизвестен биржевой код"
+           else if (!is.finite(qty) || qty <= 0) "некорректное количество"
+           else if (identical(r$side, "sell") && qty > r$max_qty) "больше, чем есть в портфеле"
+           else NULL
+    if (!is.null(bad)) {
+      showNotification(paste("Поручение не отправлено:", bad), type = "error", duration = 10)
+      return(invisible(NULL))
+    }
+    acct <- exante_primary_account()
+    if (is.null(acct)) {
+      showNotification("Поручение не отправлено: счёт Exante недоступен.",
+                        type = "error", duration = 10)
+      return(invisible(NULL))
+    }
+    res <- exante_place_order(acct, sym, r$side, qty, apply = TRUE)
+    ok <- isTRUE(res$ok)
+    store_append_order(USER$login %||% "?", r$side, sym, qty,
+                       if (ok) "отправлено" else "отказ",
+                       if (ok) "" else paste(res$error, res$message))
+    cat(sprintf("[TRADE] %s %s %s x%g -> %s\n", USER$login %||% "?", r$side,
+                sym, qty, if (ok) "OK" else paste(res$error, res$status %||% "")))
+    removeModal()
+    if (ok) {
+      showNotification(sprintf("Поручение отправлено: %s %s %g шт.",
+                               if (r$side == "buy") "покупка" else "продажа",
+                               sym, qty), type = "message", duration = 10)
+      # Реестр перечитываем из Exante: состав счёта изменится, и держать на
+      # экране вчерашнюю картину после собственной сделки нельзя.
+      ledger_rv(TRUE); store_touch(Sys.time())
+    } else {
+      showNotification(paste("Брокер отклонил поручение:",
+                             substr(res$message %||% res$error, 1, 200)),
+                        type = "error", duration = 20)
+    }
+  })
+
+  # Правая колонка: график инструмента или справочник наблюдения.
+  # Справочник — вкладка того же виджета, а не отдельная карточка: он про те же
+  # инструменты, что и график, и занимать ими два места на экране незачем.
+  right_tab <- reactiveVal("chart")
+  observeEvent(input$tab_chart, right_tab("chart"))
+  observeEvent(input$tab_registry, right_tab("registry"))
+
+  output$right_col <- renderUI({
+    tabs <- tags$div(
+      class = "seg sm",
+      actionButton("tab_chart", "График",
+                   class = if (identical(right_tab(), "chart")) "on" else NULL),
+      actionButton("tab_registry", "Справочник",
+                   class = if (identical(right_tab(), "registry")) "on" else NULL)
+    )
+    if (identical(right_tab(), "registry")) {
+      wl <- watchlist_active()
+      return(panel(
+        "Справочник наблюдения",
+        sub = sprintf("%d инструментов", nrow(wl)),
+        tip = paste0(
+          "Список инструментов, по которым ночное задание тянет ряды цен и ",
+          "который предлагается в выборе графика. Живёт в хранилище, а не в ",
+          "коде, и переживает выкатку. Перед добавлением тикер проверяется у ",
+          "источника одним запросом: реестр с несуществующим инструментом ",
+          "ронял бы ночную загрузку каждую ночь — она «всё или ничего». ",
+          "Удаление убирает инструмент из наблюдения, но ряд цен сохраняется: ",
+          "он нужен истории портфеля, если бумага когда-то покупалась. ",
+          "Зелёная точка — бумага сейчас в портфеле."),
+        right = tabs,
+        body_class = "bd--flush",
+        tags$div(class = "wl",
+                 uiOutput("wl_add"),
+                 tags$div(class = "wl-list", uiOutput("wl_table")),
+                 uiOutput("wl_msg"))
+      ))
+    }
+    panel(
+      "График инструмента",
+      tip = paste(
+        "Дневные свечи за", BLNR_TIMELINE_DAYS, "торговых сессий —",
+        "та же глубина, что у шкалы времени. Пунктир — траектория цены по",
+        "модели от базы прогноза; горизонталь — цена входа, если бумага в",
+        "портфеле; ромбы — сделки по ней; вертикаль — выбранная дата."
+      ),
+      right = tags$div(
+        style = "display:flex;gap:8px;align-items:center",
+        tags$div(style = "width:230px", uiOutput("sel_ticker_ui")),
+        tabs
+      ),
+      body_class = "bd--plot",
+      plotlyOutput("chart_instrument", height = "100%")
+    )
+  })
+
+  # Выбор инструмента строится из ДЕЙСТВУЮЩЕГО реестра: он правится с экрана,
+  # и список в разметке устарел бы сразу после первого добавления.
+  output$sel_ticker_ui <- renderUI({
+    wl <- watchlist_active()
+    held <- portfolio_prices()$ticker
+    sel <- isolate(input$sel_ticker)
+    if (is.null(sel) || !(sel %in% wl$ticker)) {
+      sel <- if (length(held) && held[1] %in% wl$ticker) held[1] else wl$ticker[1]
+    }
+    selectInput("sel_ticker", NULL, width = "100%",
+                choices = stats::setNames(as.list(wl$ticker),
+                                          paste0(wl$ticker, " \u00b7 ", wl$name_ru)),
+                selected = sel)
+  })
+
+  # --- справочник ----------------------------------------------------------
+  wl_bump <- reactiveVal(0L)
+  wl_status <- reactiveVal(NULL)
+
+  output$wl_add <- renderUI({
+    tags$div(
+      class = "wl-add",
+      tags$div(style = "width:110px",
+               textInput("wl_ticker", "Тикер", placeholder = "напр. QQQ")),
+      tags$div(style = "flex:1 1 auto",
+               textInput("wl_name", "Название", placeholder = "необязательно")),
+      actionButton("wl_do_add", "Добавить", class = "btn-today")
+    )
+  })
+
+  observeEvent(input$wl_do_add, {
+    res <- tryCatch(watchlist_add(input$wl_ticker, input$wl_name),
+                    error = function(e) list(ok = FALSE, message = conditionMessage(e)))
+    wl_status(res)
+    if (isTRUE(res$ok)) {
+      updateTextInput(session, "wl_ticker", value = "")
+      updateTextInput(session, "wl_name", value = "")
+      wl_bump(wl_bump() + 1L)
+    }
+  })
+
+  observeEvent(input$wl_do_remove, {
+    res <- tryCatch(watchlist_remove(input$wl_do_remove),
+                    error = function(e) list(ok = FALSE, message = conditionMessage(e)))
+    wl_status(res)
+    if (isTRUE(res$ok)) wl_bump(wl_bump() + 1L)
+  })
+
+  output$wl_msg <- renderUI({
+    st <- wl_status()
+    if (is.null(st)) return(NULL)
+    tags$div(class = paste("wl-msg", if (isTRUE(st$ok)) "ok" else "bad"), st$message)
+  })
+
+  output$wl_table <- renderUI({
+    wl_bump()
+    wl <- watchlist_all()
+    held <- unique(portfolio_prices()[quantity_at > 0, ticker])
+    have <- store_tickers()
+    rows <- lapply(seq_len(nrow(wl)), function(i) {
+      tk <- wl$ticker[i]
+      tags$tr(
+        tags$td(if (tk %in% held) tags$span(class = "wl-held", title = "в портфеле"),
+                tags$b(tk)),
+        tags$td(wl$name_ru[i]),
+        tags$td(class = "r",
+                if (tk %in% have) tags$span(class = "mut", "ряд есть")
+                else tags$span(class = "neg", "нет ряда")),
+        tags$td(class = "r",
+                if (tk %in% held) tags$span(class = "mut", title =
+                     "Бумага в портфеле — из наблюдения не убрать", "\u2014")
+                else tags$button(
+                  class = "wl-del", title = paste("Убрать", tk, "из наблюдения"),
+                  onclick = sprintf(
+                    "Shiny.setInputValue('wl_do_remove','%s',{priority:'event'})", tk),
+                  "\u00d7"))
+      )
+    })
+    tags$table(
+      tags$thead(tags$tr(tags$th("Тикер"), tags$th("Название"),
+                         tags$th(class = "r", "Ряд цен"), tags$th(""))),
+      tags$tbody(rows)
+    )
   })
 
   # График инструмента ####

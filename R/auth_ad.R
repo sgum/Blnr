@@ -21,6 +21,26 @@ normalize_login <- function(login) tolower(sub("@.*$", "", trimws(as.character(l
 
 user_allowed <- function(login) normalize_login(login) %in% blnr_allowed_users()
 
+# --- Право распоряжаться счётом ---------------------------------------------
+#
+# Вход на стенд и право ТОРГОВАТЬ — разные вещи. Смотреть портфель может
+# каждый из белого списка, отправлять поручения на боевой счёт — только
+# владелец счёта. По умолчанию это s.gumerov; расширяется переменной
+# BLNR_TRADERS, но в неё нельзя попасть случайно, не тронув .Renviron сервера.
+#
+# Проверка обязана стоять В ОБРАБОТЧИКЕ отправки, а не только в разметке:
+# скрытая кнопка — это не право, её положение в DOM подделывается из консоли
+# браузера за секунду.
+blnr_traders <- function() {
+  raw <- Sys.getenv("BLNR_TRADERS", unset = "s.gumerov")
+  tolower(trimws(strsplit(raw, "[,;]")[[1]]))
+}
+
+user_can_trade <- function(login) {
+  key <- normalize_login(login)
+  nzchar(key) && key %in% blnr_traders() && key %in% blnr_allowed_users()
+}
+
 # --- Кандидаты для bind -----------------------------------------------------
 
 # Короткий логин простой bind не принимает: пробуем login@UPN и NETBIOS\login.

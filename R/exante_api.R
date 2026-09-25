@@ -248,3 +248,81 @@ exante_primary_account <- function() {
   }
   NULL
 }
+
+# --- Торговые поручения -----------------------------------------------------
+#
+# ГРАНИЦА ОТВЕТСТВЕННОСТИ. Эта функция отправляет РЕАЛЬНОЕ поручение на боевой
+# счёт. По умолчанию apply = FALSE: она только собирает и возвращает payload,
+# ничего не отправляя. apply = TRUE выставляется ТОЛЬКО из обработчика кнопки
+# подтверждения, то есть по явному действию владельца счёта. Ни один
+# автоматический путь — таймер, реактив, стартовый observe — не имеет права
+# вызывать её с apply = TRUE.
+#
+# Поручение рыночное и внутридневное (duration = day): отложенных и
+# стоп-заявок стенд не ставит сознательно — они живут дольше сессии и требуют
+# отдельного управления отменой, которого здесь нет.
+exante_place_order <- function(account_id, symbol_id, side, quantity,
+                               apply = FALSE, order_type = "market",
+                               duration = "day") {
+  side <- tolower(trimws(side))
+  if (!side %in% c("buy", "sell")) {
+    return(list(error = "bad_side", message = "Сторона сделки — только buy или sell."))
+  }
+  qty <- suppressWarnings(as.numeric(quantity))
+  if (!is.finite(qty) || qty <= 0) {
+    return(list(error = "bad_quantity", message = "Количество должно быть положительным."))
+  }
+  payload <- list(
+    accountId  = account_id,
+    symbolId   = symbol_id,
+    side       = side,
+    quantity   = format(qty, scientific = FALSE, trim = TRUE),
+    orderType  = order_type,
+    duration   = duration
+  )
+  if (!isTRUE(apply)) {
+    return(list(dry_run = TRUE, payload = payload))
+  }
+
+  creds <- exante_credentials()
+  if (is.null(creds)) return(list(error = "no_credentials"))
+  resp <- tryCatch(
+    httr::POST(paste0(exante_base_url(), "/trade/3.0/orders"),
+               exante_auth_header(creds),
+               httr::content_type_json(),
+               body = jsonlite::toJSON(payload, auto_unbox = TRUE),
+               httr::timeout(30)),
+    error = function(e) e
+  )
+  if (inherits(resp, "condition")) {
+    return(list(error = "request_failed", message = conditionMessage(resp)))
+  }
+  txt <- httr::content(resp, as = "text", encoding = "UTF-8")
+  if (httr::status_code(resp) >= 400) {
+    return(list(error = "http_error", status = httr::status_code(resp),
+                message = substr(txt, 1, 400), payload = payload))
+  }
+  list(ok = TRUE, status = httr::status_code(resp),
+       response = tryCatch(jsonlite::fromJSON(txt, simplifyVector = FALSE),
+                           error = function(e) txt),
+       payload = payload)
+}
+
+# symbolId для тикера: биржу берём из уже известных позиций счёта, а если
+# бумаги в портфеле нет — из истории операций. Гадать суффикс нельзя:
+# "GS.NYSE" и "GS.NASDAQ" — разные инструменты, и поручение ушло бы не туда.
+exante_symbol_for_ticker <- function(ticker, ledger = NULL, positions = NULL) {
+  tk <- toupper(trimws(ticker))
+  cand <- character()
+  if (!is.null(positions) && length(positions) > 0) {
+    cand <- c(cand, vapply(positions, function(p) as.character(p$id %||% ""), character(1)))
+  }
+  if (!is.null(ledger) && nrow(ledger) > 0) {
+    cand <- c(cand, unique(ledger$symbol))
+  }
+  cand <- cand[nzchar(cand)]
+  cand <- cand[!exante_is_option(cand)]
+  hit <- cand[toupper(exante_symbol_to_ticker(cand)) == tk]
+  if (length(hit) == 0) return(NA_character_)
+  hit[1]
+}

@@ -233,3 +233,20 @@ md_close_with_prev <- function(ticker, on_date, days = WATCHLIST_RETRO_DAYS,
     session = sub[n, date]
   )
 }
+
+# Проверка, что источник вообще знает такой тикер. ОДИН запрос — и он
+# осознанный: реестр с несуществующим инструментом ронял бы ночную загрузку
+# каждую ночь (она «всё или ничего»), а ловить это раз в сутки по красной
+# сборке дороже, чем проверить при добавлении.
+md_probe_ticker <- function(ticker) {
+  if (!md_has_token()) return(list(ok = FALSE, message = "не задан MARKETDATA_TOKEN"))
+  res <- md_get(sprintf("/stocks/candles/D/%s/", toupper(trimws(ticker))),
+                query = list(countback = 5))
+  if (!is.null(res$error)) {
+    md_note_error(res)
+    return(list(ok = FALSE, message = md_status_text() %||% res$error))
+  }
+  n <- length(res$c %||% NULL)
+  if (n == 0) return(list(ok = FALSE, message = "источник вернул пустой ряд"))
+  list(ok = TRUE, message = sprintf("получено %d свечей", n), rows = n)
+}

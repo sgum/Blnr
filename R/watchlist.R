@@ -66,20 +66,74 @@ BLNR_FORECAST_HORIZON_DAYS <- as.integer(
 # нечитаемым, а ради него шкала и нужна.
 BLNR_FUTURE_DAYS <- as.integer(Sys.getenv("BLNR_FUTURE_DAYS", unset = "60"))
 
+# ДЕЙСТВУЮЩИЙ реестр наблюдения: то, что лежит в хранилище, иначе зашитый
+# набор выше. Владелец правит список с экрана, поэтому константа в коде — это
+# только стартовый набор, а не источник правды.
+watchlist_all <- function() {
+  st <- tryCatch(store_read_watchlist(), error = function(e) NULL)
+  if (is.null(st) || nrow(st) == 0) return(data.table::copy(WATCHLIST))
+  st[]
+}
+
 # Какие тикеры показывать и грузить. По умолчанию весь реестр; переменной
 # BLNR_WATCHLIST можно сузить ("GS,GE,AMD,GOOG,NVDA").
 watchlist_active <- function() {
+  base <- watchlist_all()
   raw <- Sys.getenv("BLNR_WATCHLIST", unset = "")
-  if (!nzchar(raw)) return(data.table::copy(WATCHLIST))
+  if (!nzchar(raw)) return(base)
   want <- toupper(trimws(strsplit(raw, "[,;]")[[1]]))
-  WATCHLIST[toupper(ticker) %in% want]
+  base[toupper(ticker) %in% want]
+}
+
+# Добавить инструмент. Перед добавлением он ПРОВЕРЯЕТСЯ у источника: реестр с
+# несуществующим тикером ронял бы ночную загрузку каждую ночь, а она
+# принципиально «всё или ничего». Возвращает list(ok, message).
+watchlist_add <- function(ticker, name_ru = NULL, probe = TRUE) {
+  tk <- toupper(trimws(as.character(ticker)))
+  if (!nzchar(tk) || !grepl("^[A-Z0-9.-]{1,12}$", tk)) {
+    return(list(ok = FALSE, message = "Тикер должен быть из латиницы, цифр, точки или дефиса."))
+  }
+  cur <- watchlist_all()
+  if (tk %in% toupper(cur$ticker)) {
+    return(list(ok = FALSE, message = paste0(tk, " уже в реестре.")))
+  }
+  if (isTRUE(probe)) {
+    pr <- md_probe_ticker(tk)
+    if (!isTRUE(pr$ok)) {
+      return(list(ok = FALSE, message = paste0("Источник не знает ", tk, ": ", pr$message)))
+    }
+  }
+  add <- data.table::data.table(
+    ticker = tk,
+    name_model = NA_character_,
+    name_ru = if (is.null(name_ru) || !nzchar(trimws(name_ru))) tk else trimws(name_ru),
+    added_at = Sys.Date()
+  )
+  store_write_watchlist(data.table::rbindlist(list(cur, add), use.names = TRUE, fill = TRUE))
+  list(ok = TRUE, message = paste0(tk, " добавлен в наблюдение."))
+}
+
+# Убрать инструмент. Ряд цен в хранилище НЕ удаляем: он ещё нужен истории
+# портфеля, если бумага когда-то покупалась.
+watchlist_remove <- function(ticker) {
+  tk <- toupper(trimws(as.character(ticker)))
+  cur <- watchlist_all()
+  if (!(tk %in% toupper(cur$ticker))) {
+    return(list(ok = FALSE, message = paste0(tk, " в реестре не значится.")))
+  }
+  if (nrow(cur) <= 1) {
+    return(list(ok = FALSE, message = "Нельзя убрать последний инструмент реестра."))
+  }
+  store_write_watchlist(cur[toupper(ticker) != tk])
+  list(ok = TRUE, message = paste0(tk, " убран из наблюдения. Ряд цен сохранён."))
 }
 
 # Тикер по подписи строки модели (точное совпадение, без учёта регистра и
 # краевых пробелов). NA, если такой строки в реестре нет.
 ticker_by_model_name <- function(name) {
+  wl <- watchlist_all()
   key <- tolower(trimws(as.character(name)))
-  idx <- match(key, tolower(trimws(WATCHLIST$name_model)))
-  WATCHLIST$ticker[idx]
+  idx <- match(key, tolower(trimws(wl$name_model)))
+  wl$ticker[idx]
 }
 

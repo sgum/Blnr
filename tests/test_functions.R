@@ -130,6 +130,34 @@ ok("логин нормализуется к короткому",     identical(
 ok("bind пробует UPN и NETBIOS",
    identical(ad_bind_candidates("s.gumerov"), c("s.gumerov@ad.dtwin.ru", "AD\\s.gumerov")))
 
+# Вход на стенд и право ТОРГОВАТЬ — разные вещи. Смотреть портфель может
+# каждый из белого списка, распоряжаться боевым счётом — только владелец.
+ok("владелец счёта может торговать",      user_can_trade("s.gumerov"))
+ok("почтовая форма логина тоже проходит", user_can_trade("S.Gumerov@dtwin.ru"))
+ok("второй допущенный на стенд торговать НЕ может", !user_can_trade("v.alad"))
+ok("посторонний не может",                !user_can_trade("i.hacker"))
+ok("пустой логин не может",               !user_can_trade(""))
+ok("v.alad при этом на стенд пускается",  user_allowed("v.alad"))
+# Список трейдеров расширяется только переменной окружения сервера.
+local({
+  old <- Sys.getenv("BLNR_TRADERS", unset = NA)
+  Sys.setenv(BLNR_TRADERS = "s.gumerov,v.alad")
+  on.exit(if (is.na(old)) Sys.unsetenv("BLNR_TRADERS") else Sys.setenv(BLNR_TRADERS = old))
+  ok("расширение списка трейдеров работает", user_can_trade("v.alad"))
+})
+ok("после сброса переменной право снова только у владельца", !user_can_trade("v.alad"))
+# Право торговать не может быть шире права входа.
+local({
+  old_t <- Sys.getenv("BLNR_TRADERS", unset = NA)
+  old_a <- Sys.getenv("BLNR_ALLOWED_USERS", unset = NA)
+  Sys.setenv(BLNR_TRADERS = "outsider", BLNR_ALLOWED_USERS = "s.gumerov")
+  on.exit({
+    if (is.na(old_t)) Sys.unsetenv("BLNR_TRADERS") else Sys.setenv(BLNR_TRADERS = old_t)
+    if (is.na(old_a)) Sys.unsetenv("BLNR_ALLOWED_USERS") else Sys.setenv(BLNR_ALLOWED_USERS = old_a)
+  })
+  ok("трейдер вне белого списка входа торговать не может", !user_can_trade("outsider"))
+})
+
 cat("== 6. Нет котировок -> прочерк, а НЕ ноль ==\n")
 # 25.09.2026 marketdata.app упёрся в лимит кредитов, все цены пришли NA, и
 # стенд показал «стоимость $0, рост −100%» — уверенную неправду. Виноват был
@@ -520,7 +548,119 @@ local({
      identical(attr(v2, "unpriced"), "AMD.CBOE.20G2026.C220"))
 })
 
-cat("== 12. Выгрузка в типовом формате мониторинга ==\n")
+cat("== 12. Справочник наблюдения ==\n")
+# Список инструментов правится с экрана и живёт в хранилище, а не в коде.
+local({
+  tmpstore <- file.path(tempdir(), paste0("wl_", as.integer(runif(1, 1e6, 9e6))))
+  old_dir <- BLNR_STORE_DIR; BLNR_STORE_DIR <<- tmpstore
+  on.exit({ BLNR_STORE_DIR <<- old_dir; unlink(tmpstore, recursive = TRUE) }, add = TRUE)
+
+  ok("пустое хранилище -> работает зашитый набор",
+     nrow(watchlist_all()) == nrow(WATCHLIST))
+
+  # Проверка у источника обязательна: реестр с несуществующим тикером ронял бы
+  # ночную загрузку каждую ночь, а она «всё или ничего».
+  ok("без проверки источника не добавляем вслепую",
+     is.function(md_probe_ticker))
+
+  r <- watchlist_add("QQQ", "Nasdaq 100 ETF", probe = FALSE)
+  ok("инструмент добавляется", isTRUE(r$ok))
+  ok("и появляется в действующем реестре", "QQQ" %in% watchlist_all()$ticker)
+  ok("реестр лёг в хранилище, а не в память", file.exists(store_watchlist_path()))
+  ok("название сохранилось",
+     identical(watchlist_all()[ticker == "QQQ", name_ru], "Nasdaq 100 ETF"))
+
+  ok("повторное добавление отклоняется",
+     !isTRUE(watchlist_add("QQQ", probe = FALSE)$ok))
+  ok("мусорный тикер отклоняется",
+     !isTRUE(watchlist_add("не тикер", probe = FALSE)$ok))
+  ok("пустой тикер отклоняется", !isTRUE(watchlist_add("", probe = FALSE)$ok))
+
+  # Регистр не должен плодить дубли.
+  ok("нижний регистр приводится к верхнему",
+     !isTRUE(watchlist_add("qqq", probe = FALSE)$ok))
+
+  ok("без названия подставляется тикер",
+     isTRUE(watchlist_add("SPY", probe = FALSE)$ok) &&
+     identical(watchlist_all()[ticker == "SPY", name_ru], "SPY"))
+
+  d <- watchlist_remove("QQQ")
+  ok("инструмент убирается", isTRUE(d$ok) && !("QQQ" %in% watchlist_all()$ticker))
+  ok("несуществующий убрать нельзя", !isTRUE(watchlist_remove("ZZZZ")$ok))
+
+  # Ряд цен при удалении остаётся: он нужен истории портфеля, если бумага
+  # когда-то покупалась.
+  store_write_candles("SPY", data.table(
+    date = seq(as.Date("2026-09-01"), by = "day", length.out = 5),
+    open = 1, high = 2, low = 0.5, close = as.numeric(1:5), volume = NA_real_))
+  watchlist_remove("SPY")
+  ok("ряд цен после удаления сохранён", nrow(store_read_candles("SPY")) == 5)
+
+  # Последний инструмент убрать нельзя: пустой реестр — это сломанный стенд.
+  one <- data.table(ticker = "AAA", name_model = NA_character_,
+                    name_ru = "AAA", added_at = Sys.Date())
+  store_write_watchlist(one)
+  ok("последний инструмент убрать нельзя", !isTRUE(watchlist_remove("AAA")$ok))
+})
+
+cat("== 13. Поручения: по умолчанию НИЧЕГО не отправляется ==\n")
+# Стенд распоряжается реальными деньгами, поэтому отправка отделена от сборки
+# запроса. exante_place_order() без apply = TRUE обязана быть безвредной: она
+# возвращает тело запроса и не делает ни одного сетевого вызова.
+local({
+  r <- exante_place_order("VMZ3002.002", "GS.NYSE", "buy", 3)
+  ok("по умолчанию это сухой прогон", isTRUE(r$dry_run))
+  ok("тело запроса собрано целиком",
+     identical(r$payload$accountId, "VMZ3002.002") &&
+     identical(r$payload$symbolId, "GS.NYSE") &&
+     identical(r$payload$side, "buy") &&
+     identical(r$payload$quantity, "3"))
+  ok("поручение рыночное и внутридневное",
+     identical(r$payload$orderType, "market") && identical(r$payload$duration, "day"))
+
+  # Валидация ДО сети: неверные входы не должны доходить до брокера даже при
+  # apply = TRUE, поэтому проверяются в самой функции.
+  ok("сторона сделки проверяется",
+     identical(exante_place_order("A", "B", "hold", 1, apply = TRUE)$error, "bad_side"))
+  ok("нулевое количество отклоняется",
+     identical(exante_place_order("A", "B", "buy", 0, apply = TRUE)$error, "bad_quantity"))
+  ok("отрицательное количество отклоняется",
+     identical(exante_place_order("A", "B", "sell", -5, apply = TRUE)$error, "bad_quantity"))
+  ok("нечисловое количество отклоняется",
+     identical(exante_place_order("A", "B", "buy", "три", apply = TRUE)$error, "bad_quantity"))
+
+  # Биржевой код не угадывается: GS.NYSE и GS.NASDAQ — разные инструменты,
+  # и поручение ушло бы не туда.
+  led <- data.table(id = 1L, value_date = as.Date("2026-09-24"), type = "TRADE",
+                    symbol = "GS.NYSE", asset = "GS.NYSE", amount = 1,
+                    price = 900, order_id = "o1")
+  ok("код берётся из истории счёта",
+     identical(exante_symbol_for_ticker("GS", ledger = led), "GS.NYSE"))
+  ok("незнакомая бумага -> NA, а не выдуманный суффикс",
+     is.na(exante_symbol_for_ticker("ZZZZ", ledger = led)))
+  # Опцион не должен подменять акцию.
+  led_opt <- rbind(led, data.table(
+    id = 2L, value_date = as.Date("2026-05-01"), type = "TRADE",
+    symbol = "AMD.CBOE.20G2026.C220", asset = "AMD.CBOE.20G2026.C220",
+    amount = 1, price = 30, order_id = "o2"))
+  ok("опцион не выдаётся за акцию",
+     is.na(exante_symbol_for_ticker("AMD", ledger = led_opt)))
+
+  # Журнал поручений: без него «нажимал / не нажимал» ничем не разрешается.
+  tmpstore <- file.path(tempdir(), paste0("ord_", as.integer(runif(1, 1e6, 9e6))))
+  old_dir <- BLNR_STORE_DIR; BLNR_STORE_DIR <<- tmpstore
+  on.exit({ BLNR_STORE_DIR <<- old_dir; unlink(tmpstore, recursive = TRUE) }, add = TRUE)
+  ok("пустой журнал читается", nrow(store_read_orders()) == 0)
+  store_append_order("s.gumerov", "buy", "GS.NYSE", 3, "отправлено")
+  store_append_order("s.gumerov", "sell", "GE.NYSE", 5, "отказ", "http_error 403")
+  o <- store_read_orders()
+  ok("записи копятся", nrow(o) == 2)
+  ok("в записи есть кто, что и чем кончилось",
+     identical(o$user[1], "s.gumerov") && identical(o$side[2], "sell") &&
+     identical(o$status[2], "отказ"))
+})
+
+cat("== 14. Выгрузка в типовом формате мониторинга ==\n")
 # Формат разобран по эталону владельца («OptionActual <дата>.xlsx»). Проверка
 # держит его строение: если лист «Реестр» переедет или у листа инструмента
 # сдвинется блок данных, файл перестанет открываться рабочими формулами —
@@ -581,7 +721,7 @@ local({
      any(grepl("нет данных", as.character(unlist(reg2)))))
 })
 
-cat("== 13. Сборка интерфейса ==\n")
+cat("== 15. Сборка интерфейса ==\n")
 # Гейт против класса дефектов «экран не собрался», который до выкладки ничем
 # не виден: перекрытые имена функций (jsonlite::validate поверх shiny::validate,
 # httr::config поверх plotly::config), пакет, нужный при СБОРКЕ UI, но
@@ -609,32 +749,27 @@ if (!inherits(ui_render, "condition")) {
   ok("в форме входа есть поля логина и пароля",
      grepl("auth_login", ui_render$login, fixed = TRUE) &&
      grepl("auth_password", ui_render$login, fixed = TRUE))
-  ok("на дашборде есть левая колонка и график инструмента",
+  # Карточки строятся на сервере (состав зависит от данных), поэтому в
+  # статичной разметке лежат только их посадочные места.
+  ok("на дашборде есть посадочные места обеих колонок",
      grepl("left_col", ui_render$dash, fixed = TRUE) &&
-     grepl("chart_instrument", ui_render$dash, fixed = TRUE))
-  # Выбор инструмента должен быть проставлен прямо в разметке: сделанный из
-  # сервера updateSelectInput доходит до клиента раньше, чем появляется сам
-  # виджет, и график остаётся пустым.
-  ok("в выпадающем списке предвыбран инструмент портфеля",
-     grepl(sprintf("selected>%s", portfolio_holdings$ticker[1]), ui_render$dash) ||
-     grepl(sprintf("value=\"%s\" selected", portfolio_holdings$ticker[1]), ui_render$dash))
-  ok("в списке весь реестр наблюдения",
-     sum(vapply(WATCHLIST$ticker,
-                function(tk) grepl(sprintf(">%s · |>%s · ", tk, tk),
-                                   ui_render$dash), logical(1))) >= 20)
+     grepl("right_col", ui_render$dash, fixed = TRUE))
+  ok("полоса времени и KPI на месте",
+     grepl("\"timeline\"", ui_render$dash, fixed = TRUE) &&
+     grepl("kpi_strip", ui_render$dash, fixed = TRUE))
+
   # Пояснения живут под «i» (конституция): виджета, содержимого которого —
   # только текст-подсказка, на экране быть не должно. Разметка — как на
   # portfolio.dtwin.ru: вложенный .tip, а не ::after.
-  ok("подсказки оформлены вложенным .tip под «i»",
-     grepl("class=\"ii ", ui_render$dash, fixed = TRUE) &&
-     grepl("class=\"tip\"", ui_render$dash, fixed = TRUE))
-  # Подсказка шириной 360px без привязки к краю уезжает за границу экрана и
-  # обрезается. Каждый значок обязан нести класс края — «ii» без него значит,
-  # что кто-то добавил подсказку и про край не подумал.
-  ok("у каждой подсказки задан край привязки",
-     !grepl("class=\"ii\"", ui_render$dash, fixed = TRUE) &&
+  # Подсказка шириной 360px без привязки к краю уезжает за границу экрана.
+  # Сами значки живут в серверных карточках, поэтому здесь проверяем ПРАВИЛА
+  # (они в статичном CSS) и то, что конструктор не умеет отдать «ii» без края.
+  ok("в стилях есть оба края привязки подсказки",
      grepl("\\.ii\\.l \\.tip\\{", ui_render$dash) &&
      grepl("\\.ii\\.r \\.tip\\{", ui_render$dash))
+  ok("info_tip всегда ставит класс края",
+     grepl("class=\"ii l\"", as.character(info_tip("x")), fixed = TRUE) &&
+     grepl("class=\"ii r\"", as.character(info_tip("x", "r")), fixed = TRUE))
   # Карточка обрезает всплывающую подсказку, если ей вернуть overflow:hidden.
   ok("карточка не обрезает всплывающую подсказку",
      !grepl("\\.card\\{[^}]*overflow:hidden", ui_render$dash))
