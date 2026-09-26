@@ -1029,19 +1029,26 @@ shinyServer(function(input, output, session) {
                    class = if (identical(right_tab(), "registry")) "on" else NULL)
     )
     if (identical(right_tab(), "registry")) {
-      wl <- watchlist_active()
+      wl <- watchlist_all()
+      on_n <- sum(is_watched(wl$active))
       return(panel(
-        "Справочник наблюдения",
-        sub = sprintf("%d инструментов", nrow(wl)),
+        "Наблюдение и справочник",
+        sub = sprintf("под наблюдением %d из %d", on_n, nrow(wl)),
         tip = paste0(
-          "Список инструментов, по которым ночное задание тянет ряды цен и ",
-          "который предлагается в выборе графика. Живёт в хранилище, а не в ",
-          "коде, и переживает выкатку. Перед добавлением тикер проверяется у ",
-          "источника одним запросом: реестр с несуществующим инструментом ",
-          "ронял бы ночную загрузку каждую ночь — она «всё или ничего». ",
-          "Удаление убирает инструмент из наблюдения, но ряд цен сохраняется: ",
+          "Верхнее поле — поиск по ГЛОБАЛЬНОМУ справочнику: все бумаги, ",
+          "доступные счёту (биржевые списки Exante, обновляются отдельным ",
+          "заданием). Оттуда бумага добавляется в наблюдение — это способ ",
+          "взять инструмент, которого у стенда до сих пор не было. ",
+          "Ниже — сам список наблюдения: по нему ночное задание тянет ряды ",
+          "цен, из него строится таблица портфеля и выбор графика. ",
+          "«Под наблюдением / Выключен» — обратимый переключатель: ",
+          "выключенная бумага не грузится и не показывается, но остаётся в ",
+          "реестре вместе со своей строкой прогнозной модели и историей ",
+          "сделок. Исходный состав из рабочей таблицы поэтому можно только ",
+          "выключить; удалить насовсем — только то, что добавлено вручную ",
+          "(помечено «вручную»). Ряд цен при любом из действий сохраняется: ",
           "он нужен истории портфеля, если бумага когда-то покупалась. ",
-          "Зелёная точка — бумага сейчас в портфеле."),
+          "Зелёная точка — бумага сейчас в портфеле, её не выключить."),
         right = tabs,
         body_class = "bd--flush",
         tags$div(class = "wl",
@@ -1089,24 +1096,72 @@ shinyServer(function(input, output, session) {
 
   output$wl_add <- renderUI({
     tags$div(
-      class = "wl-add",
-      tags$div(style = "width:110px",
-               textInput("wl_ticker", "Тикер", placeholder = "напр. QQQ")),
-      tags$div(style = "flex:1 1 auto",
-               textInput("wl_name", "Название", placeholder = "необязательно")),
-      actionButton("wl_do_add", "Добавить", class = "btn-today")
+      class = "wl-find",
+      textInput("wl_find", paste0("Добавить из глобального справочника \u00b7 ",
+                                 catalog_status_text()),
+                placeholder = "тикер или название, напр. QQQ или Berkshire",
+                width = "100%"),
+      uiOutput("wl_hits")
     )
   })
 
+  # Результаты поиска. Справочник лежит в хранилище, поиск идёт по нему —
+  # в сеть на каждую набранную букву стенд не ходит.
+  output$wl_hits <- renderUI({
+    wl_bump()
+    q <- trimws(input$wl_find %||% "")
+    if (nchar(q) < 1) return(NULL)
+    if (nrow(store_read_catalog()) == 0) {
+      return(tags$div(class = "wl-hits", tags$div(class = "wl-hit", tags$span(
+        class = "nm", "Справочник не загружен: задание «311.blnr - catalog» ещё не проходило."))))
+    }
+    hits <- catalog_search(q, limit = 20L)
+    if (nrow(hits) == 0) {
+      return(tags$div(class = "wl-hits", tags$div(class = "wl-hit", tags$span(
+        class = "nm", paste0("По «", q, "» в справочнике ничего нет.")))))
+    }
+    known <- toupper(watchlist_all()$ticker)
+    tags$div(class = "wl-hits", lapply(seq_len(nrow(hits)), function(i) {
+      tk <- hits$ticker[i]
+      have <- toupper(tk) %in% known
+      tags$div(
+        class = "wl-hit",
+        tags$b(tk),
+        tags$span(class = "nm", title = hits$name[i], hits$name[i]),
+        tags$span(class = "ex", hits$exchange[i]),
+        if (have) tags$button(disabled = NA, "уже есть")
+        else tags$button(onclick = sprintf(
+          "Shiny.setInputValue('wl_do_add','%s',{priority:'event'})", tk),
+          "Добавить")
+      )
+    }))
+  })
+
+  # Добавление: тикер приходит из справочника, поэтому опечатка исключена, но
+  # проверка у ИСТОЧНИКА ЦЕН остаётся — это другой источник, и бумага из
+  # справочника Exante может не иметь рядов на marketdata.app.
   observeEvent(input$wl_do_add, {
-    res <- tryCatch(watchlist_add(input$wl_ticker, input$wl_name),
+    tk <- input$wl_do_add
+    hit <- catalog_lookup(tk)
+    res <- tryCatch(watchlist_add(tk, if (nrow(hit) > 0) hit$name[1] else NULL),
                     error = function(e) list(ok = FALSE, message = conditionMessage(e)))
     wl_status(res)
     if (isTRUE(res$ok)) {
-      updateTextInput(session, "wl_ticker", value = "")
-      updateTextInput(session, "wl_name", value = "")
+      updateTextInput(session, "wl_find", value = "")
       wl_bump(wl_bump() + 1L)
     }
+  })
+
+  # Переключатель наблюдения. Бумагу в портфеле выключить нельзя — проверка
+  # внутри watchlist_set_active, здесь только передаём текущий состав счёта.
+  observeEvent(input$wl_do_toggle, {
+    spec <- strsplit(as.character(input$wl_do_toggle), "\\|", fixed = FALSE)[[1]]
+    res <- tryCatch(
+      watchlist_set_active(spec[1], identical(spec[2], "on"),
+                           held = unique(portfolio_prices()[quantity_at > 0, ticker])),
+      error = function(e) list(ok = FALSE, message = conditionMessage(e)))
+    wl_status(res)
+    if (isTRUE(res$ok)) wl_bump(wl_bump() + 1L)
   })
 
   observeEvent(input$wl_do_remove, {
@@ -1127,20 +1182,41 @@ shinyServer(function(input, output, session) {
     wl <- watchlist_all()
     held <- unique(portfolio_prices()[quantity_at > 0, ticker])
     have <- store_tickers()
-    rows <- lapply(seq_len(nrow(wl)), function(i) {
+    on <- is_watched(wl$active)
+    # Выключенные — в конец: список нужен прежде всего для того, что под
+    # наблюдением сейчас.
+    ord <- order(!on, wl$ticker)
+    rows <- lapply(ord, function(i) {
       tk <- wl$ticker[i]
+      is_on <- on[i]
+      in_port <- tk %in% held
+      added <- identical(wl$source[i], "added")
       tags$tr(
-        tags$td(if (tk %in% held) tags$span(class = "wl-held", title = "в портфеле"),
-                tags$b(tk)),
+        class = if (!is_on) "wl-row--off",
+        tags$td(if (in_port) tags$span(class = "wl-held", title = "в портфеле"),
+                tags$b(tk),
+                if (added) tags$span(class = "wl-src", title =
+                  "Добавлено вручную из глобального справочника", "вручную")),
         tags$td(wl$name_ru[i]),
         tags$td(class = "r",
-                if (tk %in% have) tags$span(class = "mut", "ряд есть")
+                if (!is_on) tags$span(class = "mut", "не грузится")
+                else if (tk %in% have) tags$span(class = "mut", "ряд есть")
                 else tags$span(class = "neg", "нет ряда")),
         tags$td(class = "r",
-                if (tk %in% held) tags$span(class = "mut", title =
-                     "Бумага в портфеле — из наблюдения не убрать", "\u2014")
+                if (in_port) tags$span(class = "mut", title =
+                     "Бумага в портфеле — из наблюдения не выключить", "\u2014")
                 else tags$button(
-                  class = "wl-del", title = paste("Убрать", tk, "из наблюдения"),
+                  class = if (is_on) "wl-sw" else "wl-sw off",
+                  title = if (is_on)
+                    paste("Выключить", tk, "из мониторинга; реестр и история сохранятся")
+                    else paste("Вернуть", tk, "в мониторинг"),
+                  onclick = sprintf(
+                    "Shiny.setInputValue('wl_do_toggle','%s|%s',{priority:'event'})",
+                    tk, if (is_on) "off" else "on"),
+                  if (is_on) "под наблюдением" else "выключен")),
+        tags$td(class = "r",
+                if (added && !in_port) tags$button(
+                  class = "wl-del", title = paste("Удалить", tk, "из реестра насовсем"),
                   onclick = sprintf(
                     "Shiny.setInputValue('wl_do_remove','%s',{priority:'event'})", tk),
                   "\u00d7"))
@@ -1148,7 +1224,8 @@ shinyServer(function(input, output, session) {
     })
     tags$table(
       tags$thead(tags$tr(tags$th("Тикер"), tags$th("Название"),
-                         tags$th(class = "r", "Ряд цен"), tags$th(""))),
+                         tags$th(class = "r", "Ряд цен"),
+                         tags$th(class = "r", "Мониторинг"), tags$th(""))),
       tags$tbody(rows)
     )
   })

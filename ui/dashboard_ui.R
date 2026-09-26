@@ -196,6 +196,42 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
 .wl-del{border:0;background:transparent;color:var(--faint);cursor:pointer;
   font-size:13px;line-height:1;padding:0 4px}
 .wl-del:hover{color:var(--bad)}
+/* Переключатель наблюдения. Кнопка, а не крестик: выключение обратимо, и
+   выглядеть оно должно обратимым — крестик читается как удаление. */
+.wl-sw{border:1px solid var(--border);background:#fff;color:var(--dim);
+  cursor:pointer;font-size:10.5px;font-weight:700;line-height:1;
+  padding:3px 7px;border-radius:5px;white-space:nowrap}
+.wl-sw:hover{border-color:var(--orange);color:var(--text)}
+.wl-sw.off{background:var(--orange);border-color:var(--orange);
+  color:var(--on-orange)}
+.wl-row--off td{color:var(--faint)}
+.wl-row--off td b{font-weight:600}
+.wl-src{font-size:10px;color:var(--faint);margin-left:5px;font-weight:600}
+/* Поиск по глобальному справочнику. Результаты — список под полем, а не
+   выпадающий selectize на десять тысяч строк: тот грузит весь справочник в
+   браузер на каждое открытие вкладки. */
+.wl-find{flex:none;padding:8px 10px;border-bottom:1px solid var(--border);
+  background:var(--muted)}
+.wl-find .shiny-input-container{margin:0;width:100%}
+.wl-find input.form-control{height:26px;font-size:11.5px;padding:3px 8px;
+  border-radius:6px;border-color:var(--border)}
+.wl-find label{font-size:10.5px;color:var(--dim);font-weight:700;margin:0 0 2px}
+.wl-hits{max-height:190px;overflow:auto;margin-top:6px;background:#fff;
+  border:1px solid var(--border);border-radius:6px}
+.wl-hits:empty{display:none}
+.wl-hit{display:flex;gap:8px;align-items:center;padding:4px 8px;
+  border-bottom:1px solid #f0f2f5;font-size:11.5px}
+.wl-hit:last-child{border-bottom:0}
+.wl-hit b{min-width:56px}
+.wl-hit .nm{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;color:var(--dim)}
+.wl-hit .ex{font-size:10px;color:var(--faint);font-weight:700}
+.wl-hit button{border:0;background:var(--orange);color:var(--on-orange);
+  font-weight:700;font-size:10.5px;padding:3px 8px;border-radius:5px;
+  cursor:pointer}
+.wl-hit button[disabled]{background:var(--border);color:var(--faint);
+  cursor:default}
+.wl-sub{font-size:10.5px;color:var(--dim);font-weight:700;padding:6px 10px 2px}
 .wl-msg{flex:none;padding:6px 10px;font-size:11.5px;border-top:1px solid var(--border)}
 .wl-msg.ok{color:var(--ok);background:#f1f8f1}
 .wl-msg.bad{color:var(--bad);background:#fdf1f1}

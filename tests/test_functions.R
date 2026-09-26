@@ -34,10 +34,24 @@ portfolio_holdings <- data.table(
 
 source("R/snapshots.R"); source("R/watchlist.R"); source("R/store.R")
 source("R/marketdata.R")
-source("R/exante_api.R"); source("R/ledger.R")
+source("R/exante_api.R"); source("R/catalog.R"); source("R/ledger.R")
 source("R/portfolio.R"); source("R/forecast.R")
 source("R/auth_ad.R"); source("R/auth_session.R")
 source("R/export_xlsx.R"); source("R/ui_kit.R")
+
+# Локаль прогона — часть прибора, а не декорация. В LC_CTYPE=C кириллица в
+# именах листов xlsx калечится, и openxlsx падает «Sheet 'Реестр' does not
+# exist» — это выглядит как дефект выгрузки, хотя выгрузка исправна (поймано
+# 26.09.2026, потерян час). Дешевле отказаться запускаться, чем разбирать
+# красный прогон, которого нет.
+if (!isTRUE(l10n_info()$UTF8) && !grepl("UTF-?8", Sys.getlocale("LC_CTYPE"), ignore.case = TRUE)) {
+  cat(sprintf(paste0(
+    "ОТКАЗ: прогон в локали %s. Кириллица в именах листов xlsx в ней ломается,\n",
+    "и проверки покажут дефекты, которых нет. Запускать так:\n",
+    "  LC_ALL=ru_RU.UTF-8 Rscript tests/test_functions.R\n"),
+    Sys.getlocale("LC_CTYPE")))
+  quit(status = 2L)
+}
 
 FAILED <- 0L
 ok <- function(what, cond) {
@@ -682,62 +696,209 @@ local({
      identical(attr(v2, "unpriced"), "AMD.CBOE.20G2026.C220"))
 })
 
-cat("== 13. Справочник наблюдения ==\n")
-# Список инструментов правится с экрана и живёт в хранилище, а не в коде.
+cat("== 13. Наблюдение: выключить, а НЕ удалить ==\n")
+# Два разных действия, которые раньше были одним. Бумага из рабочей таблицы —
+# часть исходного состава: по ней есть строка прогнозной модели и, возможно,
+# история сделок, поэтому её можно только выключить из мониторинга. Удалять
+# насовсем можно лишь добавленное вручную. Прежняя версия удаляла и то и
+# другое, и выброшенная seed-бумага исчезала из стенда, оставляя строку модели
+# без тикера.
 local({
   tmpstore <- file.path(tempdir(), paste0("wl_", as.integer(runif(1, 1e6, 9e6))))
   old_dir <- BLNR_STORE_DIR; BLNR_STORE_DIR <<- tmpstore
   on.exit({ BLNR_STORE_DIR <<- old_dir; unlink(tmpstore, recursive = TRUE) }, add = TRUE)
 
-  ok("пустое хранилище -> работает зашитый набор",
-     nrow(watchlist_all()) == nrow(WATCHLIST))
+  ok("пустое хранилище -> весь исходный набор под наблюдением",
+     nrow(watchlist_all()) == nrow(WATCHLIST) &&
+     nrow(watchlist_active()) == nrow(WATCHLIST))
 
-  # Проверка у источника обязательна: реестр с несуществующим тикером ронял бы
-  # ночную загрузку каждую ночь, а она «всё или ничего».
-  ok("без проверки источника не добавляем вслепую",
-     is.function(md_probe_ticker))
+  # --- исходный состав: только выключение -----------------------------------
+  r <- watchlist_remove("IBM")
+  ok("seed-бумагу удалить НЕЛЬЗЯ", !isTRUE(r$ok))
+  ok("и отказ объясняет, что её можно выключить",
+     grepl("выключить", r$message))
+  ok("после отказа она по-прежнему в реестре", "IBM" %in% watchlist_all()$ticker)
 
-  r <- watchlist_add("QQQ", "Nasdaq 100 ETF", probe = FALSE)
-  ok("инструмент добавляется", isTRUE(r$ok))
-  ok("и появляется в действующем реестре", "QQQ" %in% watchlist_all()$ticker)
-  ok("реестр лёг в хранилище, а не в память", file.exists(store_watchlist_path()))
+  s1 <- watchlist_set_active("IBM", FALSE)
+  ok("seed-бумага выключается", isTRUE(s1$ok))
+  ok("выключенная УХОДИТ из мониторинга",
+     !("IBM" %in% watchlist_active()$ticker))
+  ok("но ОСТАЁТСЯ в реестре", "IBM" %in% watchlist_all()$ticker)
+  ok("строка прогнозной модели при этом цела",
+     identical(watchlist_all()[ticker == "IBM", name_model], "IBM"))
+  ok("состояние легло в хранилище, а не в память", file.exists(store_watchlist_path()))
+
+  ok("включается обратно", isTRUE(watchlist_set_active("IBM", TRUE)$ok) &&
+     "IBM" %in% watchlist_active()$ticker)
+
+  # Подписи и name_model берутся ИЗ КОДА, а не из хранилища: они правятся
+  # вместе с разбором модели, и старый CSV не должен их морозить.
+  ok("название после круга выключения не потерялось",
+     identical(watchlist_all()[ticker == "IBM", name_ru], "IBM"))
+
+  # --- бумага в портфеле не выключается -------------------------------------
+  h <- watchlist_set_active("GS", FALSE, held = c("GS"))
+  ok("бумагу в портфеле выключить нельзя", !isTRUE(h$ok))
+  ok("и она осталась под наблюдением", "GS" %in% watchlist_active()$ticker)
+
+  # --- добавленное вручную: и выключить, и удалить ---------------------------
+  a <- watchlist_add("QQQ", "Nasdaq 100 ETF", probe = FALSE)
+  ok("инструмент добавляется", isTRUE(a$ok))
+  ok("и сразу под наблюдением", "QQQ" %in% watchlist_active()$ticker)
   ok("название сохранилось",
      identical(watchlist_all()[ticker == "QQQ", name_ru], "Nasdaq 100 ETF"))
+  ok("помечен как добавленный вручную",
+     identical(watchlist_all()[ticker == "QQQ", source], "added"))
+  ok("seed-бумаги помечены иначе",
+     identical(watchlist_all()[ticker == "IBM", source], "seed"))
 
-  ok("повторное добавление отклоняется",
+  ok("повторное добавление включённого отклоняется",
      !isTRUE(watchlist_add("QQQ", probe = FALSE)$ok))
-  ok("мусорный тикер отклоняется",
-     !isTRUE(watchlist_add("не тикер", probe = FALSE)$ok))
-  ok("пустой тикер отклоняется", !isTRUE(watchlist_add("", probe = FALSE)$ok))
+  # Выключенную надо ВКЛЮЧИТЬ, а не заводить второй строкой: дубль тикера в
+  # реестре означал бы двойной вес бумаги в таблице портфеля.
+  watchlist_set_active("QQQ", FALSE)
+  again <- watchlist_add("QQQ", probe = FALSE)
+  ok("добавление выключенной = включение обратно",
+     isTRUE(again$ok) && "QQQ" %in% watchlist_active()$ticker)
+  ok("дубля при этом не появилось",
+     sum(watchlist_all()$ticker == "QQQ") == 1L)
 
-  # Регистр не должен плодить дубли.
-  ok("нижний регистр приводится к верхнему",
+  ok("мусорный тикер отклоняется", !isTRUE(watchlist_add("не тикер", probe = FALSE)$ok))
+  ok("пустой тикер отклоняется",   !isTRUE(watchlist_add("", probe = FALSE)$ok))
+  ok("нижний регистр не плодит дубль",
      !isTRUE(watchlist_add("qqq", probe = FALSE)$ok))
 
-  ok("без названия подставляется тикер",
-     isTRUE(watchlist_add("SPY", probe = FALSE)$ok) &&
-     identical(watchlist_all()[ticker == "SPY", name_ru], "SPY"))
-
   d <- watchlist_remove("QQQ")
-  ok("инструмент убирается", isTRUE(d$ok) && !("QQQ" %in% watchlist_all()$ticker))
-  ok("несуществующий убрать нельзя", !isTRUE(watchlist_remove("ZZZZ")$ok))
+  ok("добавленное вручную удаляется насовсем",
+     isTRUE(d$ok) && !("QQQ" %in% watchlist_all()$ticker))
+  ok("несуществующее удалить нельзя", !isTRUE(watchlist_remove("ZZZZ")$ok))
 
-  # Ряд цен при удалении остаётся: он нужен истории портфеля, если бумага
-  # когда-то покупалась.
+  # Ряд цен при любом из действий остаётся: он нужен истории портфеля, если
+  # бумага когда-то покупалась.
   store_write_candles("SPY", data.table(
     date = seq(as.Date("2026-09-01"), by = "day", length.out = 5),
     open = 1, high = 2, low = 0.5, close = as.numeric(1:5), volume = NA_real_))
-  watchlist_remove("SPY")
+  watchlist_add("SPY", probe = FALSE); watchlist_remove("SPY")
   ok("ряд цен после удаления сохранён", nrow(store_read_candles("SPY")) == 5)
+  watchlist_set_active("IBM", FALSE)
+  ok("ряд цен после выключения сохранён", nrow(store_read_candles("SPY")) == 5)
+  watchlist_set_active("IBM", TRUE)
 
-  # Последний инструмент убрать нельзя: пустой реестр — это сломанный стенд.
-  one <- data.table(ticker = "AAA", name_model = NA_character_,
-                    name_ru = "AAA", added_at = Sys.Date())
-  store_write_watchlist(one)
-  ok("последний инструмент убрать нельзя", !isTRUE(watchlist_remove("AAA")$ok))
+  # --- последний включённый ---------------------------------------------------
+  wl <- watchlist_all()
+  wl[, active := ticker == "GS"]
+  store_write_watchlist(wl)
+  ok("остался один включённый", nrow(watchlist_active()) == 1L)
+  ok("последний включённый выключить нельзя",
+     !isTRUE(watchlist_set_active("GS", FALSE)$ok))
+
+  # --- совместимость с файлом ПРЕЖНЕЙ версии ---------------------------------
+  # Хранилище старого формата — это список без `active` и `source`. Прочитать
+  # его как «всё выключено» значило бы снять мониторинг целиком одной
+  # выкаткой; как «всё добавлено вручную» — сделать seed-бумаги удаляемыми.
+  data.table::fwrite(data.table(ticker = c("AAPL", "ZZTOP"),
+                                name_model = NA_character_,
+                                name_ru = c("Apple", "ZZ"),
+                                added_at = as.Date("2026-09-01")),
+                     store_watchlist_path())
+  ok("файл прежней версии читается как «всё включено»",
+     nrow(watchlist_active()) == nrow(WATCHLIST) + 1L)
+  ok("и seed-бумага из него не стала удаляемой",
+     !isTRUE(watchlist_remove("AAPL")$ok))
+  ok("а незнакомая строка из него — добавленная вручную",
+     identical(watchlist_all()[ticker == "ZZTOP", source], "added") &&
+     isTRUE(watchlist_remove("ZZTOP")$ok))
+
+  # NA в флаге — «состояние неизвестно», а не «выключено»: один битый CSV не
+  # должен молча снимать бумагу с мониторинга.
+  ok("NA в флаге наблюдения = под наблюдением",
+     all(is_watched(c(TRUE, NA))) && !is_watched(FALSE))
 })
 
-cat("== 14. Поручения: по умолчанию НИЧЕГО не отправляется ==\n")
+cat("== 14. Глобальный справочник инструментов ==\n")
+# Справочник отвечает на «что вообще можно взять на счёт» ДО добавления.
+# Раньше тикер набирался руками, и опечатка садилась в реестр, а ронять ночную
+# загрузку начинала следующей ночью.
+local({
+  tmpstore <- file.path(tempdir(), paste0("cat_", as.integer(runif(1, 1e6, 9e6))))
+  old_dir <- BLNR_STORE_DIR; BLNR_STORE_DIR <<- tmpstore
+  on.exit({ BLNR_STORE_DIR <<- old_dir; unlink(tmpstore, recursive = TRUE) }, add = TRUE)
+
+  ok("без файла справочник пуст, а не падает", nrow(store_read_catalog()) == 0)
+  ok("пустой справочник -> поиск ничего не находит",
+     nrow(catalog_search("QQQ")) == 0)
+  ok("и это видно по строке состояния",
+     grepl("не загружен", catalog_status_text()))
+
+  store_write_catalog(data.table(
+    ticker    = c("QQQ", "QQQM", "BRK.B", "TQQQ", "AAPL"),
+    symbol_id = c("QQQ.NASDAQ", "QQQM.NASDAQ", "BRK.B.NYSE", "TQQQ.NASDAQ", "AAPL.NASDAQ"),
+    name      = c("Invesco QQQ Trust", "Invesco Nasdaq 100 ETF",
+                  "Berkshire Hathaway Inc.", "ProShares UltraPro QQQ",
+                  "Apple Inc."),
+    exchange  = c("NASDAQ", "NASDAQ", "NYSE", "NASDAQ", "NASDAQ"),
+    currency  = "USD", country = "US"))
+
+  ok("справочник читается из хранилища", nrow(store_read_catalog()) == 5)
+  ok("строка состояния показывает объём и дату",
+     grepl("^5 инстр\\., обновлён \\d{2}\\.\\d{2}\\.\\d{4}$", catalog_status_text()))
+
+  # Порядок результатов — не украшение: человек, набравший QQQ, хочет сам QQQ,
+  # а не три фонда со словом Nasdaq в названии.
+  hits <- catalog_search("QQQ")
+  ok("точное совпадение тикера идёт первым", hits$ticker[1] == "QQQ")
+  ok("совпадение по началу тикера раньше совпадения в названии",
+     which(hits$ticker == "QQQM") < which(hits$ticker == "TQQQ"))
+  ok("поиск по названию тоже работает",
+     identical(catalog_search("berkshire")$ticker, "BRK.B"))
+  ok("регистр запроса не важен",
+     identical(catalog_search("qqqm")$ticker[1], "QQQM"))
+  ok("пустой запрос не выводит весь справочник",
+     nrow(catalog_search("")) == 0 && nrow(catalog_search("   ")) == 0)
+  ok("нет совпадений -> пустой результат", nrow(catalog_search("ZZZZZZ")) == 0)
+  ok("лимит соблюдается", nrow(catalog_search("Q", limit = 2L)) == 2L)
+
+  # Затенение имени столбца аргументом: `ticker == ticker` внутри data.table
+  # сравнивает столбец с собой и возвращает ВСЁ. Ловится только входом, где
+  # правильный ответ — одна строка из пяти.
+  lk <- catalog_lookup("QQQ")
+  ok("точный поиск возвращает одну бумагу, а не весь справочник",
+     nrow(lk) == 1L && identical(lk$name[1], "Invesco QQQ Trust"))
+  ok("неизвестный тикер -> пусто", nrow(catalog_lookup("ZZZZ")) == 0)
+
+  # Из справочника берётся название при добавлении: набирать его руками
+  # незачем, а тикер вместо названия в таблице ничего не сообщает.
+  ok("название бумаги подставляется из справочника",
+     isTRUE(watchlist_add("QQQM", probe = FALSE)$ok) &&
+     identical(watchlist_all()[ticker == "QQQM", name_ru],
+               "Invesco Nasdaq 100 ETF"))
+
+  # Разбор ответа биржи: из справочника выкидываются опционы и фьючерсы —
+  # портфель их не считает, и предлагать их к добавлению нельзя.
+  parsed <- local({
+    res <- list(
+      list(ticker = "AAA", symbolId = "AAA.NYSE", description = "Alpha Inc",
+           exchange = "NYSE", currency = "USD", country = "US", symbolType = "STOCK"),
+      list(ticker = "FFF", symbolId = "FFF.NYSE", description = "Fund",
+           exchange = "NYSE", currency = "USD", country = "US", symbolType = "FUND"),
+      list(ticker = "OOO", symbolId = "OOO.NYSE", description = "Opt",
+           exchange = "NYSE", currency = "USD", country = "US", symbolType = "OPTION"))
+    pick <- function(x, f) { v <- x[[f]]; if (is.null(v)) NA_character_ else as.character(v)[1] }
+    dt <- data.table::rbindlist(lapply(res, function(x) list(
+      ticker = pick(x, "ticker"), type = pick(x, "symbolType"))))
+    dt[type %in% c("STOCK", "FUND")]
+  })
+  ok("акции и фонды остаются, опционы выкидываются",
+     identical(sort(parsed$ticker), c("AAA", "FFF")))
+
+  # «Всё или ничего» по биржам: половина справочника выглядит исправной и
+  # молча скрывает половину бумаг.
+  ok("отказ одной биржи не пишет обрезанный справочник",
+     grepl("return\\(list\\(ok = FALSE", paste(readLines("R/catalog.R", warn = FALSE),
+                                               collapse = "\n")))
+})
+
+cat("== 15. Поручения: по умолчанию НИЧЕГО не отправляется ==\n")
 # Стенд распоряжается реальными деньгами, поэтому отправка отделена от сборки
 # запроса. exante_place_order() без apply = TRUE обязана быть безвредной: она
 # возвращает тело запроса и не делает ни одного сетевого вызова.
@@ -794,7 +955,7 @@ local({
      identical(o$status[2], "отказ"))
 })
 
-cat("== 15. Результат против модели — в деньгах ==\n")
+cat("== 16. Результат против модели — в деньгах ==\n")
 # В процентах это была доходность ВЛОЖЕННОГО В БУМАГИ: одна акция за $285,
 # упавшая на 20%, рисовала «портфель −20%», хотя на счёте лежали ещё десятки
 # тысяч наличными. В деньгах подменить смысл нечем.
@@ -833,7 +994,7 @@ local({
      !any(c("fact_pct", "model_pct", "dev_pp") %in% names(d)))
 })
 
-cat("== 16. Выгрузка в типовом формате мониторинга ==\n")
+cat("== 17. Выгрузка в типовом формате мониторинга ==\n")
 # Формат разобран по эталону владельца («OptionActual <дата>.xlsx»). Проверка
 # держит его строение: если лист «Реестр» переедет или у листа инструмента
 # сдвинется блок данных, файл перестанет открываться рабочими формулами —
@@ -894,7 +1055,7 @@ local({
      any(grepl("нет данных", as.character(unlist(reg2)))))
 })
 
-cat("== 17. Сборка интерфейса ==\n")
+cat("== 18. Сборка интерфейса ==\n")
 # Гейт против класса дефектов «экран не собрался», который до выкладки ничем
 # не виден: перекрытые имена функций (jsonlite::validate поверх shiny::validate,
 # httr::config поверх plotly::config), пакет, нужный при СБОРКЕ UI, но

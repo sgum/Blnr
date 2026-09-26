@@ -229,12 +229,19 @@ store_ledger_updated <- function() {
 }
 
 # --- Реестр наблюдения ------------------------------------------------------
-# Список инструментов перестал быть константой в коде: его правит владелец с
-# экрана. Хранится рядом с рядами цен, потому что это тоже накопительные
-# данные — переживают выкатку и общие для всех сессий стенда.
+# Хранилище держит не список инструментов, а СОСТОЯНИЕ по каждому: включён он
+# в мониторинг или выключен, и добавлен ли он вручную.
 #
-# Файл отсутствует — работаем на зашитом наборе (WATCHLIST в R/watchlist.R).
-# Так стенд поднимается на чистом хранилище и не требует ручного посева.
+# Почему не список. Набор из рабочей таблицы (WATCHLIST в R/watchlist.R) —
+# исходный состав наблюдения, его нельзя «удалить»: по этим бумагам есть
+# прогнозная модель и история. Прежняя версия хранила именно список и
+# позволяла выкинуть строку насовсем; после этого инструмент исчезал из
+# стенда, а строка модели по нему оставалась висеть без тикера. Теперь
+# выключение — это флаг `active`, а удалить можно только то, что сам же и
+# добавил.
+#
+# Файл отсутствует — весь исходный набор включён. Так стенд поднимается на
+# чистом хранилище и не требует ручного посева.
 store_watchlist_path <- function() file.path(BLNR_STORE_DIR, "watchlist.csv")
 
 store_read_watchlist <- function() {
@@ -242,22 +249,89 @@ store_read_watchlist <- function() {
   if (!file.exists(f)) return(NULL)
   dt <- tryCatch(data.table::fread(f), error = function(e) NULL)
   if (is.null(dt) || nrow(dt) == 0 || !"ticker" %in% names(dt)) return(NULL)
-  for (col in c("ticker", "name_model", "name_ru")) {
-    if (!col %in% names(dt)) dt[[col]] <- NA_character_
-    dt[[col]] <- as.character(dt[[col]])
+  for (col in c("ticker", "name_model", "name_ru", "source")) {
+    if (!col %in% names(dt)) data.table::set(dt, j = col, value = NA_character_)
+    data.table::set(dt, j = col, value = as.character(dt[[col]]))
   }
+  # Файл прежней версии (без `active` и `source`) читается как «всё включено,
+  # источник неизвестен»: иначе первая же выкатка выключила бы наблюдение
+  # целиком, а неизвестный источник считался бы добавленным вручную и стал бы
+  # удаляемым.
+  if (!"active" %in% names(dt)) data.table::set(dt, j = "active", value = TRUE)
+  dt[, active := !(tolower(trimws(as.character(active))) %in%
+                     c("false", "f", "0", "no", "нет"))]
+  dt[is.na(source) | !nzchar(source), source := "seed"]
   if (!"added_at" %in% names(dt)) dt[, added_at := as.Date(NA)]
   dt[, added_at := as.Date(added_at)]
-  dt[!is.na(ticker) & nzchar(ticker)]
+  dt <- dt[!is.na(ticker) & nzchar(ticker)]
   dt[]
 }
 
 store_write_watchlist <- function(dt) {
   dir.create(BLNR_STORE_DIR, showWarnings = FALSE, recursive = TRUE)
+  dt <- data.table::copy(dt)
+  for (col in c("name_model", "name_ru", "source")) {
+    if (!col %in% names(dt)) data.table::set(dt, j = col, value = NA_character_)
+  }
+  if (!"active" %in% names(dt)) data.table::set(dt, j = "active", value = TRUE)
+  if (!"added_at" %in% names(dt)) data.table::set(dt, j = "added_at", value = as.Date(NA))
   data.table::setorder(dt, ticker)
-  data.table::fwrite(dt[, .(ticker, name_model, name_ru, added_at)],
+  data.table::fwrite(dt[, .(ticker, name_model, name_ru, source, active, added_at)],
                      store_watchlist_path())
   invisible(TRUE)
+}
+
+# --- Глобальный справочник инструментов -------------------------------------
+# Полный список бумаг, которые ВООБЩЕ можно взять на счёт: выгрузка биржевых
+# списков Exante (/md/3.0/exchanges/<биржа>). Это справочные данные, а не ряды
+# цен: меняются раз в недели, поэтому тянутся отдельным заданием со своим
+# ритмом (scripts/fetch_catalog.R) и живут в одном файле.
+#
+# Зачем он вообще. Добавить бумагу в наблюдение раньше можно было, только
+# набрав тикер руками и попав в него с первого раза; чего нет в аккаунте,
+# выяснялось уже после добавления. Справочник отвечает на вопрос «а что
+# вообще есть» до добавления, а не после.
+store_catalog_path <- function() file.path(BLNR_STORE_DIR, "catalog.csv")
+
+empty_catalog <- function() {
+  data.table::data.table(
+    ticker = character(), symbol_id = character(), name = character(),
+    exchange = character(), currency = character(), country = character()
+  )
+}
+
+store_read_catalog <- function() {
+  f <- store_catalog_path()
+  if (!file.exists(f)) return(empty_catalog())
+  key <- paste0("catalog@", as.numeric(file.mtime(f)))
+  hit <- .STORE_MEM[[key]]
+  if (!is.null(hit)) return(hit)
+  dt <- tryCatch(data.table::fread(f, colClasses = "character"),
+                 error = function(e) NULL)
+  if (is.null(dt) || nrow(dt) == 0 || !"ticker" %in% names(dt)) {
+    return(empty_catalog())
+  }
+  for (col in names(empty_catalog())) {
+    if (!col %in% names(dt)) data.table::set(dt, j = col, value = NA_character_)
+  }
+  dt <- dt[!is.na(ticker) & nzchar(ticker)]
+  for (k in ls(.STORE_MEM)) if (startsWith(k, "catalog@")) rm(list = k, envir = .STORE_MEM)
+  assign(key, dt[], envir = .STORE_MEM)
+  dt[]
+}
+
+store_write_catalog <- function(dt) {
+  dir.create(BLNR_STORE_DIR, showWarnings = FALSE, recursive = TRUE)
+  data.table::setorder(dt, ticker, exchange)
+  data.table::fwrite(dt[, .(ticker, symbol_id, name, exchange, currency, country)],
+                     store_catalog_path())
+  invisible(TRUE)
+}
+
+store_catalog_updated <- function() {
+  f <- store_catalog_path()
+  if (!file.exists(f)) return(NULL)
+  file.mtime(f)
 }
 
 # --- Журнал поручений -------------------------------------------------------

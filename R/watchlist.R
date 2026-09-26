@@ -66,66 +66,129 @@ BLNR_FORECAST_HORIZON_DAYS <- as.integer(
 # нечитаемым, а ради него шкала и нужна.
 BLNR_FUTURE_DAYS <- as.integer(Sys.getenv("BLNR_FUTURE_DAYS", unset = "60"))
 
-# ДЕЙСТВУЮЩИЙ реестр наблюдения: то, что лежит в хранилище, иначе зашитый
-# набор выше. Владелец правит список с экрана, поэтому константа в коде — это
-# только стартовый набор, а не источник правды.
+# Реестр наблюдения = ИСХОДНЫЙ набор выше + то, что добавлено с экрана из
+# глобального справочника. Хранилище даёт только состояние: включён инструмент
+# в мониторинг или выключен.
+#
+# ДВА РАЗНЫХ ДЕЙСТВИЯ, которые раньше были одним. Бумага из рабочей таблицы
+# (source = "seed") — часть исходного состава: по ней есть строка прогнозной
+# модели и, возможно, история сделок, поэтому её можно только ВЫКЛЮЧИТЬ из
+# мониторинга, но не выкинуть из реестра. Бумага, добавленная вручную
+# (source = "added"), — ошибочно взятая или уже ненужная, её можно удалить
+# насовсем. Прежняя версия удаляла и то и другое, и выброшенная seed-бумага
+# исчезала из стенда, оставляя строку модели без тикера.
 watchlist_all <- function() {
+  seed <- data.table::copy(WATCHLIST)
+  seed[, `:=`(source = "seed", active = TRUE, added_at = as.Date(NA))]
   st <- tryCatch(store_read_watchlist(), error = function(e) NULL)
-  if (is.null(st) || nrow(st) == 0) return(data.table::copy(WATCHLIST))
-  st[]
+  if (is.null(st) || nrow(st) == 0) return(seed[])
+
+  # Состояние из хранилища накладывается на исходный набор ПО ТИКЕРУ. Так
+  # растущий seed не теряется (хранилище, записанное до его пополнения, не
+  # знает о новых бумагах), а подписи и name_model всегда берутся из кода —
+  # они там правятся вместе с разбором модели.
+  idx <- match(toupper(seed$ticker), toupper(st$ticker))
+  seed[!is.na(idx), active := st$active[idx[!is.na(idx)]]]
+  extra <- st[!(toupper(ticker) %in% toupper(seed$ticker))]
+  if (nrow(extra) == 0) return(seed[])
+  extra[, source := "added"]
+  data.table::rbindlist(list(seed, extra), use.names = TRUE, fill = TRUE)[]
 }
 
-# Какие тикеры показывать и грузить. По умолчанию весь реестр; переменной
-# BLNR_WATCHLIST можно сузить ("GS,GE,AMD,GOOG,NVDA").
+# Что реально идёт в мониторинг: ночная загрузка, таблица портфеля, выбор
+# графика. Выключенное сюда не попадает — ряды по нему не тянутся.
+# BLNR_WATCHLIST дополнительно сужает набор ("GS,GE,AMD") для отладки.
 watchlist_active <- function() {
-  base <- watchlist_all()
+  base <- watchlist_all()[is_watched(active)]
   raw <- Sys.getenv("BLNR_WATCHLIST", unset = "")
   if (!nzchar(raw)) return(base)
   want <- toupper(trimws(strsplit(raw, "[,;]")[[1]]))
   base[toupper(ticker) %in% want]
 }
 
-# Добавить инструмент. Перед добавлением он ПРОВЕРЯЕТСЯ у источника: реестр с
-# несуществующим тикером ронял бы ночную загрузку каждую ночь, а она
-# принципиально «всё или ничего». Возвращает list(ok, message).
+# Флаг наблюдения по столбцу. NA — это «состояние неизвестно», а не
+# «выключено»: инструмент, попавший в реестр с пустым флагом, должен остаться
+# под наблюдением, иначе один битый CSV молча снимает бумагу с мониторинга.
+is_watched <- function(x) is.na(x) | as.logical(x)
+
+# Включить или выключить инструмент в мониторинге. Выключить бумагу, которая
+# СЕЙЧАС в портфеле, нельзя: без её ряда история и стоимость портфеля считались
+# бы по дыре, и падение цены выглядело бы как «нет данных».
+watchlist_set_active <- function(ticker, on, held = character()) {
+  tk <- toupper(trimws(as.character(ticker)))
+  cur <- watchlist_all()
+  i <- match(tk, toupper(cur$ticker))
+  if (is.na(i)) return(list(ok = FALSE, message = paste0(tk, " в реестре не значится.")))
+  on <- isTRUE(on)
+  if (!on && tk %in% toupper(held)) {
+    return(list(ok = FALSE, message = paste0(
+      tk, " сейчас в портфеле: пока бумага на счёте, её ряд нужен истории.")))
+  }
+  if (!on && sum(is_watched(cur$active)) <= 1L) {
+    return(list(ok = FALSE, message = "Нельзя выключить последний инструмент мониторинга."))
+  }
+  cur[i, active := on]
+  store_write_watchlist(cur)
+  list(ok = TRUE, message = paste0(
+    tk, if (on) " включён в мониторинг." else
+      " выключен из мониторинга. Ряд цен и история сохранены."))
+}
+
+# Добавить инструмент из глобального справочника. Перед добавлением он
+# ПРОВЕРЯЕТСЯ у источника цен: справочник Exante говорит, что бумагу можно
+# купить, но ряды тянет marketdata.app — это разные источники, и реестр с
+# тикером, которого нет у второго, ронял бы ночную загрузку каждую ночь
+# (она принципиально «всё или ничего»). Возвращает list(ok, message).
 watchlist_add <- function(ticker, name_ru = NULL, probe = TRUE) {
   tk <- toupper(trimws(as.character(ticker)))
   if (!nzchar(tk) || !grepl("^[A-Z0-9.-]{1,12}$", tk)) {
     return(list(ok = FALSE, message = "Тикер должен быть из латиницы, цифр, точки или дефиса."))
   }
   cur <- watchlist_all()
-  if (tk %in% toupper(cur$ticker)) {
-    return(list(ok = FALSE, message = paste0(tk, " уже в реестре.")))
+  i <- match(tk, toupper(cur$ticker))
+  if (!is.na(i)) {
+    # Бумага уже известна стенду. Это не ошибка: выключенную надо просто
+    # включить обратно, а не заводить второй строкой.
+    if (!is_watched(cur$active[i])) return(watchlist_set_active(tk, TRUE))
+    return(list(ok = FALSE, message = paste0(tk, " уже под наблюдением.")))
   }
   if (isTRUE(probe)) {
     pr <- md_probe_ticker(tk)
     if (!isTRUE(pr$ok)) {
-      return(list(ok = FALSE, message = paste0("Источник не знает ", tk, ": ", pr$message)))
+      return(list(ok = FALSE, message = paste0("Источник цен не знает ", tk, ": ", pr$message)))
     }
   }
+  if (is.null(name_ru) || !nzchar(trimws(name_ru))) {
+    hit <- catalog_lookup(tk)
+    name_ru <- if (nrow(hit) > 0) hit$name[1] else tk
+  }
   add <- data.table::data.table(
-    ticker = tk,
-    name_model = NA_character_,
-    name_ru = if (is.null(name_ru) || !nzchar(trimws(name_ru))) tk else trimws(name_ru),
-    added_at = Sys.Date()
+    ticker = tk, name_model = NA_character_, name_ru = trimws(name_ru),
+    source = "added", active = TRUE, added_at = Sys.Date()
   )
-  store_write_watchlist(data.table::rbindlist(list(cur, add), use.names = TRUE, fill = TRUE))
-  list(ok = TRUE, message = paste0(tk, " добавлен в наблюдение."))
+  store_write_watchlist(data.table::rbindlist(list(cur, add), use.names = TRUE,
+                                              fill = TRUE))
+  list(ok = TRUE, message = paste0(tk, " добавлен в наблюдение. Ряд цен появится после ночной загрузки."))
 }
 
-# Убрать инструмент. Ряд цен в хранилище НЕ удаляем: он ещё нужен истории
-# портфеля, если бумага когда-то покупалась.
+# Удалить инструмент из реестра НАСОВСЕМ. Только для добавленных вручную:
+# исходный состав из рабочей таблицы удалять нельзя, его выключают.
+# Ряд цен в хранилище не трогаем: он нужен истории портфеля, если бумага
+# когда-то покупалась.
 watchlist_remove <- function(ticker) {
   tk <- toupper(trimws(as.character(ticker)))
   cur <- watchlist_all()
-  if (!(tk %in% toupper(cur$ticker))) {
+  i <- match(tk, toupper(cur$ticker))
+  if (is.na(i)) {
     return(list(ok = FALSE, message = paste0(tk, " в реестре не значится.")))
   }
-  if (nrow(cur) <= 1) {
-    return(list(ok = FALSE, message = "Нельзя убрать последний инструмент реестра."))
+  if (!identical(cur$source[i], "added")) {
+    return(list(ok = FALSE, message = paste0(
+      tk, " — из исходного состава наблюдения: его можно выключить из ",
+      "мониторинга, но не удалить.")))
   }
-  store_write_watchlist(cur[toupper(ticker) != tk])
-  list(ok = TRUE, message = paste0(tk, " убран из наблюдения. Ряд цен сохранён."))
+  store_write_watchlist(cur[-i])
+  list(ok = TRUE, message = paste0(tk, " удалён из реестра. Ряд цен сохранён."))
 }
 
 # Тикер по подписи строки модели (точное совпадение, без учёта регистра и
