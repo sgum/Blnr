@@ -1161,6 +1161,28 @@ local({
   ok("арифметика от базы прогноза верна",
      isTRUE(all.equal(from_base[date == last, dev_pp], -20)))
 
+  # Факт и модель — ОТДЕЛЬНЫЕ ряды, а не только их разница. Одна линия разницы
+  # отвечает «насколько разошлись», но не отвечает «куда шла каждая»: +20 пп
+  # получаются и когда факт вырос на 20 при нулевой модели, и когда факт упал
+  # на 10, а модель обещала −30 (замечание владельца 27.09.2026).
+  ok("в ряду есть и факт, и модель по отдельности",
+     all(c("fact_pct", "model_pct", "dev_pp") %in% names(from_base)))
+  ok("факт считается от цены на базовую дату",
+     isTRUE(all.equal(from_base[date == last, fact_pct], -20)))
+  ok("модель лежит отдельным столбцом",
+     isTRUE(all.equal(from_base[date == last, model_pct], 0)))
+  # Разные пары (факт, модель) с ОДИНАКОВОЙ разницей: по разнице они
+  # неотличимы, по отдельным рядам — отличимы.
+  fc_minus <- data.table(date = sess, ticker = "EEE",
+                         forecast_growth_pct = c(rep(0, 11), -30))
+  other <- ticker_deviation_series(led_fresh, fc_minus, sess, tickers = "EEE")
+  ok("по разнице два разных случая неотличимы",
+     abs((other[date == last, dev_pp] - 10) -
+         (from_base[date == last, dev_pp] + 20)) < 1e-6)
+  ok("а по отдельным рядам — отличимы",
+     !isTRUE(all.equal(other[date == last, model_pct],
+                       from_base[date == last, model_pct])))
+
   # Бумаги нет в модели — ряда нет вовсе, а не линия из NA: именно пустая
   # безымянная линия и появлялась в легенде (GOOGL).
   ok("бумаги нет в модели -> в ряду её нет",
