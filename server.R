@@ -16,6 +16,28 @@ shinyServer(function(input, output, session) {
   # раньше входа. См. R/auth_ad.R и ui/{login,dashboard}_ui.R.
   USER <- reactiveValues(login = NULL)
 
+  # Восстановление запомненного входа. Происходит ДО первой отрисовки, поэтому
+  # человек не видит форму и не гадает, помнит его стенд или нет.
+  # Права проверяются ЗАНОВО: кука удостоверяет личность, но не членство в
+  # белом списке — человека могли убрать, пока она жила.
+  local({
+    tok <- session_cookie_value(session)
+    who <- session_token_login(tok)
+    if (!is.na(who) && nzchar(who)) {
+      if (user_allowed(who)) {
+        USER$login <- who
+        cat(sprintf("[AUTH] RESTORE login=%s %s\n", who, format(Sys.time())))
+        # Скользящий срок: активный пользователь пароль не набирает, а забытая
+        # вкладка протухает сама.
+        shinyjs::runjs(session_cookie_set_js(session_token_make(who)))
+      } else {
+        cat(sprintf("[AUTH] RESTORE ОТКАЗ login=%s вне белого списка %s\n",
+                    who, format(Sys.time())))
+        shinyjs::runjs(session_cookie_clear_js())
+      }
+    }
+  })
+
   output$gate <- renderUI({
     if (is.null(USER$login)) loginUI() else dashboardUI()
   })
@@ -26,6 +48,9 @@ shinyServer(function(input, output, session) {
     if (isTRUE(res$ok)) {
       cat(sprintf("[AUTH] OK login=%s %s\n", res$login, format(Sys.time())))
       USER$login <- res$login
+      if (blnr_session_enabled()) {
+        shinyjs::runjs(session_cookie_set_js(session_token_make(res$login)))
+      }
     } else {
       # Единая ошибка: не различаем «нет пользователя» и «неверный пароль».
       output$login_error <- renderUI(
@@ -45,7 +70,10 @@ shinyServer(function(input, output, session) {
   observeEvent(input$auth_logout, {
     cat(sprintf("[AUTH] LOGOUT login=%s %s\n", USER$login %||% "", format(Sys.time())))
     USER$login <- NULL
-    session$reload()
+    # Куку гасим ДО перезагрузки: иначе восстановление на старте новой сессии
+    # тут же вернёт человека внутрь, и «Выйти» перестанет работать.
+    shinyjs::runjs(paste0(session_cookie_clear_js(),
+                          "setTimeout(function(){location.reload();}, 60);"))
   })
 
   # Данные портфеля ####

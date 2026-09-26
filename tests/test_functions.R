@@ -36,7 +36,8 @@ source("R/snapshots.R"); source("R/watchlist.R"); source("R/store.R")
 source("R/marketdata.R")
 source("R/exante_api.R"); source("R/ledger.R")
 source("R/portfolio.R"); source("R/forecast.R")
-source("R/auth_ad.R"); source("R/export_xlsx.R"); source("R/ui_kit.R")
+source("R/auth_ad.R"); source("R/auth_session.R")
+source("R/export_xlsx.R"); source("R/ui_kit.R")
 
 FAILED <- 0L
 ok <- function(what, cond) {
@@ -158,7 +159,79 @@ local({
   ok("трейдер вне белого списка входа торговать не может", !user_can_trade("outsider"))
 })
 
-cat("== 6. Нет котировок -> прочерк, а НЕ ноль ==\n")
+cat("== 6. Запоминание входа: подписанная кука ==\n")
+# Кука удостоверяет личность и НИЧЕГО больше. Подделать её нельзя — подпись на
+# серверном секрете; просрочить нельзя — срок внутри подписи.
+local({
+  old_secret <- Sys.getenv("BLNR_SESSION_SECRET", unset = NA)
+  on.exit(if (is.na(old_secret)) Sys.unsetenv("BLNR_SESSION_SECRET")
+          else Sys.setenv(BLNR_SESSION_SECRET = old_secret), add = TRUE)
+
+  # Секрета нет — запоминание выключено ЦЕЛИКОМ. Работать с пустым ключом
+  # нельзя: подпись на нём подделывает кто угодно.
+  Sys.unsetenv("BLNR_SESSION_SECRET")
+  ok("без секрета запоминание выключено", !blnr_session_enabled())
+  ok("без секрета токен не выдаётся", is.na(session_token_make("s.gumerov")))
+  # Короткий секрет — тоже отказ: 8 символов перебираются.
+  Sys.setenv(BLNR_SESSION_SECRET = "short")
+  ok("короткий секрет не принимается", !blnr_session_enabled())
+
+  Sys.setenv(BLNR_SESSION_SECRET = strrep("k", 48))
+  ok("с секретом запоминание включается", blnr_session_enabled())
+
+  tok <- session_token_make("s.gumerov")
+  ok("токен выдаётся", !is.na(tok) && nzchar(tok))
+  ok("токен читается обратно",
+     identical(session_token_login(tok), "s.gumerov"))
+  ok("почтовая форма логина нормализуется",
+     identical(session_token_login(session_token_make("S.Gumerov@dtwin.ru")), "s.gumerov"))
+
+  # Подделка: меняем логин в теле, подпись не сходится.
+  parts <- strsplit(tok, ".", fixed = TRUE)[[1]]
+  forged <- paste(c("v1", openssl::base64_encode(charToRaw("i.hacker")),
+                    parts[3], parts[4]), collapse = ".")
+  ok("подменённый логин отклоняется", is.na(session_token_login(forged)))
+  # Подделка срока.
+  far <- paste(c(parts[1:2], as.integer(Sys.time()) + 10^7, parts[4]), collapse = ".")
+  ok("продлённый срок отклоняется", is.na(session_token_login(far)))
+  # Мусор и обрезки.
+  ok("мусорный токен отклоняется", is.na(session_token_login("абвгд")))
+  ok("пустой токен отклоняется", is.na(session_token_login("")))
+  ok("токен без подписи отклоняется",
+     is.na(session_token_login(paste(parts[1:3], collapse = "."))))
+
+  # Истечение: токен, выданный давно, недействителен.
+  past <- session_token_make("s.gumerov", now = as.integer(Sys.time()) - 10^6)
+  ok("просроченный токен отклоняется", is.na(session_token_login(past)))
+
+  # Чужой секрет не подходит — это и значит «подписано сервером».
+  good <- session_token_make("s.gumerov")
+  Sys.setenv(BLNR_SESSION_SECRET = strrep("z", 48))
+  ok("токен другого сервера отклоняется", is.na(session_token_login(good)))
+  Sys.setenv(BLNR_SESSION_SECRET = strrep("k", 48))
+
+  # Разбор заголовка Cookie: нужное значение среди соседей.
+  fake_session <- list(request = list(
+    HTTP_COOKIE = paste0("other=1; ", BLNR_SESSION_COOKIE, "=", tok, "; third=abc")))
+  ok("кука вынимается из заголовка",
+     identical(session_cookie_value(fake_session), tok))
+  ok("нет куки -> NA",
+     is.na(session_cookie_value(list(request = list(HTTP_COOKIE = "a=1; b=2")))))
+  ok("пустой заголовок -> NA",
+     is.na(session_cookie_value(list(request = list(HTTP_COOKIE = "")))))
+  # Имя куки не должно совпадать по префиксу: dt_stand_auth_x это не она.
+  ok("похожее имя куки не принимается",
+     is.na(session_cookie_value(list(request = list(
+       HTTP_COOKIE = paste0(BLNR_SESSION_COOKIE, "_x=", tok))))))
+
+  # Secure ставится только по https — иначе браузер молча не сохранит куку.
+  js <- session_cookie_set_js("abc")
+  ok("Secure зависит от протокола", grepl("location.protocol==='https:'", js, fixed = TRUE))
+  ok("кука ограничена SameSite", grepl("SameSite=Strict", js, fixed = TRUE))
+  ok("выход гасит куку", grepl("Max-Age=0", session_cookie_clear_js(), fixed = TRUE))
+})
+
+cat("== 7. Нет котировок -> прочерк, а НЕ ноль ==\n")
 # 25.09.2026 marketdata.app упёрся в лимит кредитов, все цены пришли NA, и
 # стенд показал «стоимость $0, рост −100%» — уверенную неправду. Виноват был
 # na.rm = TRUE в сумме: он превращает «неизвестно» в ноль. Проверка ловит
@@ -191,7 +264,7 @@ local({
   .MD_STATE$last_error <- NULL
 })
 
-cat("== 7. Хранилище рядов ==\n")
+cat("== 8. Хранилище рядов ==\n")
 # Стенд обязан читать ряды из хранилища и НЕ ходить в интернет: лимит
 # marketdata.app — 100 запросов в сутки, а ползунок времени по всему реестру
 # это сотни обращений на одно открытие экрана.
@@ -294,7 +367,7 @@ local({
                                              today = as.Date("2026-09-19")))))
 })
 
-cat("== 8. Портфель на момент времени ==\n")
+cat("== 9. Портфель на момент времени ==\n")
 # Ползунок времени показывает состояние на выбранную СЕССИЮ. Два дефекта,
 # которые здесь легко допустить и невозможно заметить глазами:
 #   * цена берётся последняя известная, а не на выбранную дату (портфель
@@ -358,7 +431,7 @@ local({
                as.Date("2026-09-10")))
 })
 
-cat("== 9. Реестр операций счёта ==\n")
+cat("== 10. Реестр операций счёта ==\n")
 # Реестр восстанавливает позиции, среднюю цену и кэш на ЛЮБУЮ дату. Сводка
 # брокера знает только сегодня, и с ползунком времени этого мало: сегодняшний
 # кэш рядом с прошлой стоимостью бумаг — состояние, которого не существовало.
@@ -502,7 +575,7 @@ local({
      s0$positions == 0 && isTRUE(all.equal(s0$cash, 10000)))
 })
 
-cat("== 10. Сравнение с моделью за период владения ==\n")
+cat("== 11. Сравнение с моделью за период владения ==\n")
 # Прогноз накоплен от базовой даты файла. Позиция, купленная ПОЗЖЕ базы, при
 # сравнении «от базы» присваивает себе движение цены за время, когда её не
 # было: на боевом счёте это давало «обгоняем модель на 7.71 пп» при
@@ -567,7 +640,7 @@ local({
      r[1, dev_pct] != r[1, dev_since_entry_pp])
 })
 
-cat("== 11. Динамика счёта не занижается молча ==\n")
+cat("== 12. Динамика счёта не занижается молча ==\n")
 # Инструмент, который держался, но цены на него нет (все опционы на текущем
 # тарифе), раньше просто пропускался — стоимость бумаг занижалась, а линия
 # оставалась гладкой и правдоподобной.
@@ -609,7 +682,7 @@ local({
      identical(attr(v2, "unpriced"), "AMD.CBOE.20G2026.C220"))
 })
 
-cat("== 12. Справочник наблюдения ==\n")
+cat("== 13. Справочник наблюдения ==\n")
 # Список инструментов правится с экрана и живёт в хранилище, а не в коде.
 local({
   tmpstore <- file.path(tempdir(), paste0("wl_", as.integer(runif(1, 1e6, 9e6))))
@@ -664,7 +737,7 @@ local({
   ok("последний инструмент убрать нельзя", !isTRUE(watchlist_remove("AAA")$ok))
 })
 
-cat("== 13. Поручения: по умолчанию НИЧЕГО не отправляется ==\n")
+cat("== 14. Поручения: по умолчанию НИЧЕГО не отправляется ==\n")
 # Стенд распоряжается реальными деньгами, поэтому отправка отделена от сборки
 # запроса. exante_place_order() без apply = TRUE обязана быть безвредной: она
 # возвращает тело запроса и не делает ни одного сетевого вызова.
@@ -721,7 +794,7 @@ local({
      identical(o$status[2], "отказ"))
 })
 
-cat("== 14. Результат против модели — в деньгах ==\n")
+cat("== 15. Результат против модели — в деньгах ==\n")
 # В процентах это была доходность ВЛОЖЕННОГО В БУМАГИ: одна акция за $285,
 # упавшая на 20%, рисовала «портфель −20%», хотя на счёте лежали ещё десятки
 # тысяч наличными. В деньгах подменить смысл нечем.
@@ -760,7 +833,7 @@ local({
      !any(c("fact_pct", "model_pct", "dev_pp") %in% names(d)))
 })
 
-cat("== 15. Выгрузка в типовом формате мониторинга ==\n")
+cat("== 16. Выгрузка в типовом формате мониторинга ==\n")
 # Формат разобран по эталону владельца («OptionActual <дата>.xlsx»). Проверка
 # держит его строение: если лист «Реестр» переедет или у листа инструмента
 # сдвинется блок данных, файл перестанет открываться рабочими формулами —
@@ -821,7 +894,7 @@ local({
      any(grepl("нет данных", as.character(unlist(reg2)))))
 })
 
-cat("== 16. Сборка интерфейса ==\n")
+cat("== 17. Сборка интерфейса ==\n")
 # Гейт против класса дефектов «экран не собрался», который до выкладки ничем
 # не виден: перекрытые имена функций (jsonlite::validate поверх shiny::validate,
 # httr::config поверх plotly::config), пакет, нужный при СБОРКЕ UI, но

@@ -52,6 +52,7 @@ source("R/ledger.R")
 source("R/portfolio.R")
 source("R/forecast.R")
 source("R/auth_ad.R")
+source("R/auth_session.R")
 source("R/export_xlsx.R")
 source("R/ui_kit.R")
 
