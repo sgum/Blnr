@@ -636,9 +636,25 @@ shinyServer(function(input, output, session) {
         tip = paste0("По каждой бумаге за период владения: фактический рост ",
                      "от цены входа рядом с прогнозом модели за тот же ",
                      "период. Расхождение столбиков и есть повод для решения ",
-                     "по позиции."),
-        body_class = "bd--plot",
-        plotlyOutput("chart_vs_forecast", height = "100%")
+                     "по позиции. «Динамика» показывает то же расхождение по ",
+                     "сессиям, в процентных пунктах: бумага, которая три ",
+                     "недели шла по модели и обвалилась вчера, и бумага, ",
+                     "разошедшаяся с моделью с первого дня, дают одинаковый ",
+                     "столбик, а решения по ним разные. Тикеры под шапкой ",
+                     "выключаются щелчком — одна бумага с большим ",
+                     "расхождением сжимает остальные в полоску, и на общей ",
+                     "шкале их уже не прочитать. Период владения считается от ",
+                     "ПОСЛЕДНЕЙ покупки, поэтому в день докупки на линии ",
+                     "ступенька: с этого дня меряется другой период."),
+        # Переключатель вида — ОТДЕЛЬНЫЙ вывод, а не разметка в шапке: иначе
+        # каждое переключение пересобирало бы всю колонку вместе с таблицей
+        # позиций (и подсветка активной кнопки отставала бы на такт).
+        right = uiOutput("vs_tabs"),
+        body_class = "bd--flush",
+        tags$div(class = "vs",
+                 uiOutput("vs_chips"),
+                 tags$div(class = "vs-plot",
+                          plotlyOutput("chart_vs_forecast", height = "100%")))
       )
     )
   })
@@ -1449,8 +1465,78 @@ shinyServer(function(input, output, session) {
     )
   })
 
-  output$chart_vs_forecast <- renderPlotly({
+  # --- «Факт против модели»: вид и выключенные тикеры ----------------------
+  # Состояние ЭКРАННОЕ, не хранилищное: это фильтр взгляда, а не реестр
+  # наблюдения. Выключенная здесь бумага остаётся в портфеле, в таблице и в
+  # ночной загрузке — она просто не мешает читать шкалу.
+  vs_view <- reactiveVal("bars")
+  vs_off <- reactiveVal(character())
+  observeEvent(input$vs_tab_bars, vs_view("bars"))
+  observeEvent(input$vs_tab_time, vs_view("time"))
+  observeEvent(input$vs_toggle, {
+    tk <- as.character(input$vs_toggle)
+    cur <- vs_off()
+    vs_off(if (tk %in% cur) setdiff(cur, tk) else c(cur, tk))
+  })
+  observeEvent(input$vs_all, vs_off(character()))
+
+  # Тикеры, которые виджет показывает сейчас. Выключены все до единого —
+  # показываем всё: пустой график вместо ответа хуже, чем прежний вид.
+  vs_tickers <- reactive({
+    all_tk <- sort(unique(portfolio_metrics()[quantity_at > 0, ticker]))
+    keep <- setdiff(all_tk, vs_off())
+    if (length(keep) == 0) all_tk else keep
+  })
+
+  output$vs_tabs <- renderUI({
+    tags$div(
+      class = "seg sm",
+      actionButton("vs_tab_bars", "На дату",
+                   class = if (identical(vs_view(), "bars")) "on" else NULL),
+      actionButton("vs_tab_time", "Динамика",
+                   class = if (identical(vs_view(), "time")) "on" else NULL)
+    )
+  })
+
+  output$vs_chips <- renderUI({
     m <- portfolio_metrics()[quantity_at > 0]
+    req(nrow(m) > 0)
+    data.table::setorder(m, ticker)
+    all_tk <- m$ticker
+    off <- vs_off()
+    tags$div(
+      class = "vs-chips",
+      lapply(seq_along(all_tk), function(i) {
+        tk <- all_tk[i]
+        is_off <- tk %in% off
+        # Бумага без строки в модели сравнивать не с чем — на «Динамике» её
+        # линии не будет вовсе. Об этом говорит сам чип (пунктир + причина под
+        # курсором), а не пустая безымянная линия в легенде: именно так GOOGL
+        # и попадал на график — линией из нуля точек.
+        no_model <- !is.finite(m$forecast_since_entry_pct[i])
+        tags$button(
+          class = paste("vs-chip", if (is_off) "off", if (no_model) "nomodel"),
+          title = paste0(
+            if (is_off) paste("Вернуть", tk, "на график")
+            else paste("Убрать", tk, "с графика; в портфеле бумага остаётся"),
+            if (no_model) paste0(" \u00b7 сравнения с моделью нет: ",
+                                 m$model_gap[i] %||% "нет в модели")),
+          onclick = sprintf(
+            "Shiny.setInputValue('vs_toggle','%s',{priority:'event'})", tk),
+          tk)
+      }),
+      if (length(off) > 0) tags$button(
+        class = "vs-chip all",
+        title = "Вернуть все бумаги на график",
+        onclick = "Shiny.setInputValue('vs_all', Math.random(), {priority:'event'})",
+        "все")
+    )
+  })
+
+  output$chart_vs_forecast <- renderPlotly({
+    keep <- vs_tickers()
+    if (identical(vs_view(), "time")) return(vs_time_plot(keep))
+    m <- portfolio_metrics()[quantity_at > 0][ticker %in% keep]
     req(nrow(m) > 0)
     blnr_plot_layout(
       add_trace(
@@ -1465,6 +1551,46 @@ shinyServer(function(input, output, session) {
       yaxis = list(title = "", ticksuffix = "%", gridcolor = "#eceff3")
     )
   })
+
+  # Динамика расхождения по сессиям — линия на бумагу, в процентных пунктах.
+  # Ноль означает «шла ровно по модели», поэтому нулевая линия рисуется всегда:
+  # без неё знак расхождения приходится вычислять по подписям оси.
+  vs_time_plot <- function(keep) {
+    d <- ticker_deviation_series(ledger_now(), forecast_data(),
+                                 timeline_sessions(), tickers = keep)
+    shiny::validate(shiny::need(
+      nrow(d) > 0 && any(is.finite(d$dev_pp)),
+      "Сравнивать нечего: по выбранным бумагам нет прогноза за период владения."))
+    # Бумага, по которой сравнивать не с чем (нет строки в модели, куплена до
+    # прогноза), даёт ряд из одних NA. plotly рисует такой ряд пустой линией
+    # БЕЗ ИМЕНИ, и в легенде появляется безымянный пункт, который ничего не
+    # обозначает. Отбрасываем её здесь; почему её нет — написано на чипе.
+    have <- d[, .(ok = any(is.finite(dev_pp))), by = ticker][ok == TRUE, ticker]
+    d <- d[ticker %in% have]
+    p <- plot_ly()
+    tks <- sort(unique(d$ticker))
+    for (i in seq_along(tks)) {
+      sub <- d[ticker == tks[i]]
+      p <- add_trace(p, data = sub, x = ~date, y = ~dev_pp, type = "scatter",
+                     mode = "lines", name = tks[i],
+                     line = list(width = 1.8, color = vs_line_color(i)),
+                     hovertemplate = paste0("%{x|%d.%m.%Y}<br>", tks[i],
+                                            ": %{y:+.2f} пп<extra></extra>"))
+    }
+    blnr_plot_layout(
+      p,
+      legend = list(orientation = "h", x = 0, y = 1.16, font = list(size = 10)),
+      margin = list(l = 46, r = 10, t = 20, b = 26),
+      shapes = list(
+        list(type = "line", xref = "paper", x0 = 0, x1 = 1, y0 = 0, y1 = 0,
+             line = list(color = BLNR_COLORS$border, width = 1)),
+        list(type = "line", xref = "x", yref = "paper",
+             x0 = sel_date(), x1 = sel_date(), y0 = 0, y1 = 1,
+             line = list(color = BLNR_COLORS$orange, width = 1.5))),
+      xaxis = list(title = "", gridcolor = BLNR_COLORS$grid),
+      yaxis = list(title = "", ticksuffix = " пп", gridcolor = BLNR_COLORS$grid)
+    )
+  }
 
   output$chart_deviation <- renderPlotly({
     d <- deviation_series()

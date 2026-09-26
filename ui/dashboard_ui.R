@@ -176,6 +176,24 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
 .bd--plot>div,.bd--plot .plotly,.bd--plot .html-widget{height:100%!important}
 .bd--flush{padding:0;display:flex;flex-direction:column}
 .empty{padding:14px 12px;font-size:12px;color:var(--dim)}
+/* --- виджет «Факт против модели»: чипы тикеров --- */
+.vs{display:flex;flex-direction:column;min-height:0;height:100%}
+.vs-plot{flex:1 1 auto;min-height:0;padding:2px}
+.vs-plot>div,.vs-plot .plotly,.vs-plot .html-widget{height:100%!important}
+.vs-chips{flex:none;display:flex;flex-wrap:wrap;gap:4px;padding:6px 8px 4px}
+.vs-chip{border:1px solid var(--border);background:#fff;color:var(--text);
+  font-size:10.5px;font-weight:700;line-height:1;padding:3px 7px;
+  border-radius:10px;cursor:pointer}
+.vs-chip:hover{border-color:var(--orange)}
+/* Выключенная бумага остаётся видимой и читаемой: она не исчезает из
+   портфеля, её просто нет на графике. Зачёркивание говорит это без подписи. */
+.vs-chip.off{color:var(--faint);background:var(--muted);
+  text-decoration:line-through}
+.vs-chip.all{border-color:var(--orange);color:var(--orange-d)}
+/* Бумага, которую не с чем сравнить: на «Динамике» её линии не будет.
+   Пунктир говорит это без подписи, причина — под курсором. */
+.vs-chip.nomodel{border-style:dashed;color:var(--faint)}
+
 /* --- справочник наблюдения --- */
 .wl{display:flex;flex-direction:column;min-height:0;height:100%}
 .wl-add{flex:none;display:flex;gap:6px;align-items:flex-end;padding:8px 10px;

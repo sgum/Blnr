@@ -1018,7 +1018,123 @@ local({
      !any(c("fact_pct", "model_pct", "dev_pp") %in% names(d)))
 })
 
-cat("== 17. Выгрузка в типовом формате мониторинга ==\n")
+cat("== 17. Динамика расхождения по каждой бумаге ==\n")
+# Столбики «на дату» отвечают, насколько модель ошиблась к сегодняшнему дню,
+# но не отвечают, ошибалась ли она так всегда. Бумага, три недели шедшая по
+# модели и обвалившаяся вчера, и бумага, разошедшаяся с первого дня, дают
+# ОДИНАКОВЫЙ столбик — а решения по ним разные.
+local({
+  tmpstore <- file.path(tempdir(), paste0("tdev_", as.integer(runif(1, 1e6, 9e6))))
+  old_dir <- BLNR_STORE_DIR; BLNR_STORE_DIR <<- tmpstore
+  on.exit({ BLNR_STORE_DIR <<- old_dir; unlink(tmpstore, recursive = TRUE) }, add = TRUE)
+  sess <- seq(as.Date("2026-06-01"), by = "day", length.out = 12)
+
+  # AAA: ровно по модели, потом обвал в последний день.
+  store_write_candles("AAA", data.table(
+    date = sess, open = 1, high = 2, low = 0.5,
+    close = c(rep(100, 11), 80), volume = NA_real_))
+  # BBB: расходится с моделью с первого дня владения.
+  store_write_candles("BBB", data.table(
+    date = sess, open = 1, high = 2, low = 0.5,
+    close = seq(100, 78, length.out = 12), volume = NA_real_))
+
+  leg <- function(i, d, type, sym, asset, amount, price = NA_real_, ord = "") {
+    data.table(id = i, value_date = as.Date(d), type = type, symbol = sym,
+               asset = asset, amount = amount, price = price, order_id = ord)
+  }
+  led <- rbindlist(list(
+    leg(1, "2026-05-01", "FUNDING/WITHDRAWAL", "", "USD", 100000),
+    leg(2, "2026-06-02", "TRADE", "AAA.NYSE", "AAA.NYSE", 10, 100, "a1"),
+    leg(3, "2026-06-02", "TRADE", "AAA.NYSE", "USD", -1000, NA, "a1"),
+    leg(4, "2026-06-02", "TRADE", "BBB.NYSE", "BBB.NYSE", 10, 100, "b1"),
+    leg(5, "2026-06-02", "TRADE", "BBB.NYSE", "USD", -1000, NA, "b1")
+  ))
+  # Модель обещает ноль роста обеим: тогда расхождение = сам факт, и проверять
+  # его можно арифметикой, а не «похоже на правду».
+  fc <- rbindlist(list(
+    data.table(date = sess, ticker = "AAA", forecast_growth_pct = 0),
+    data.table(date = sess, ticker = "BBB", forecast_growth_pct = 0)))
+
+  d <- ticker_deviation_series(led, fc, sess)
+  ok("ряд считается по каждой бумаге отдельно",
+     nrow(d) > 0 && identical(sort(unique(d$ticker)), c("AAA", "BBB")))
+  ok("до покупки сессий нет",
+     nrow(d[date < as.Date("2026-06-02")]) == 0)
+
+  # Главное, ради чего виджет: на ОДНУ И ТУ ЖЕ дату обе бумаги дают
+  # сопоставимое расхождение, а во времени ведут себя по-разному.
+  last <- as.Date("2026-06-12")
+  ok("к последней сессии обе разошлись примерно одинаково",
+     abs(d[date == last & ticker == "AAA", dev_pp] -
+         d[date == last & ticker == "BBB", dev_pp]) < 3)
+  mid <- as.Date("2026-06-08")
+  ok("а в середине периода — ПО-РАЗНОМУ",
+     abs(d[date == mid & ticker == "AAA", dev_pp]) < 0.001 &&
+     d[date == mid & ticker == "BBB", dev_pp] < -4)
+
+  # Арифметика: цена 80 против входа 100 при нулевой модели — ровно −20 пп.
+  ok("расхождение считается от цены входа",
+     isTRUE(all.equal(d[date == last & ticker == "AAA", dev_pp], -20)))
+  ok("разница = факт минус модель",
+     isTRUE(all.equal(d$dev_pp, d$fact_pct - d$model_pct)))
+
+  # Фильтр по бумагам — то самое выключение тикера на экране.
+  one <- ticker_deviation_series(led, fc, sess, tickers = "BBB")
+  ok("фильтр оставляет только выбранные бумаги",
+     identical(unique(one$ticker), "BBB"))
+  ok("и не меняет значения оставшейся",
+     isTRUE(all.equal(one[date == mid, dev_pp], d[date == mid & ticker == "BBB", dev_pp])))
+
+  # Инструмент, которого нельзя оценить ВООБЩЕ (ряда нет — так на этом тарифе
+  # выглядят опционы), даёт NA, а не тихий ноль: разрыв на графике честнее
+  # линии, проведённой через пустоту.
+  led2 <- rbindlist(list(led,
+    leg(6, "2026-06-02", "TRADE", "CCC.CBOE.20G2026.C220", "CCC.CBOE.20G2026.C220", 4, 50, "c1"),
+    leg(7, "2026-06-02", "TRADE", "CCC.CBOE.20G2026.C220", "USD", -200, NA, "c1")))
+  fc2 <- rbindlist(list(fc, data.table(date = sess, ticker = "CCC.CBOE.20G2026.C220",
+                                       forecast_growth_pct = 0)))
+  d2 <- ticker_deviation_series(led2, fc2, sess)
+  ok("неоценимый инструмент даёт NA, а не ноль",
+     nrow(d2[ticker == "CCC.CBOE.20G2026.C220"]) > 0 &&
+     all(is.na(d2[ticker == "CCC.CBOE.20G2026.C220", dev_pp])))
+  ok("и соседние бумаги при этом посчитаны",
+     isTRUE(all.equal(d2[date == last & ticker == "AAA", dev_pp], -20)))
+
+  # Цена переносится с последней известной сессии — это правило для выходных
+  # и праздников, а не недосмотр: биржа закрыта, бумага стоит столько же.
+  # От застоявшегося ряда защищает не этот код, а ночная загрузка: она
+  # принципиально «всё или ничего» и краснеет, когда ряды не продвинулись.
+  store_write_candles("DDD", data.table(
+    date = sess[1:5], open = 1, high = 2, low = 0.5,
+    close = rep(50, 5), volume = NA_real_))
+  led3w <- rbindlist(list(led,
+    leg(6, "2026-06-02", "TRADE", "DDD.NYSE", "DDD.NYSE", 4, 50, "d1"),
+    leg(7, "2026-06-02", "TRADE", "DDD.NYSE", "USD", -200, NA, "d1")))
+  fc3w <- rbindlist(list(fc, data.table(date = sess, ticker = "DDD",
+                                        forecast_growth_pct = 0)))
+  d2b <- ticker_deviation_series(led3w, fc3w, sess)
+  ok("после конца ряда держится последняя цена, а не ноль",
+     isTRUE(all.equal(d2b[date == last & ticker == "DDD", dev_pp], 0)))
+
+  # Куплено ДО базы прогноза — сравнивать нечего (тот же запрет, что в
+  # таблице: иначе бумаге приписывается прогноз, которого на входе не было).
+  fc_late <- data.table(date = sess[6:12], ticker = "AAA", forecast_growth_pct = 0)
+  d3 <- ticker_deviation_series(led, fc_late, sess)
+  ok("куплено до базы прогноза -> расхождения нет",
+     all(is.na(d3[ticker == "AAA", dev_pp])))
+
+  # Период считается от ПОСЛЕДНЕЙ покупки: докупка переносит точку отсчёта,
+  # и с этого дня меряется другой период.
+  led3 <- rbindlist(list(led,
+    leg(8, "2026-06-09", "TRADE", "AAA.NYSE", "AAA.NYSE", 10, 100, "a2"),
+    leg(9, "2026-06-09", "TRADE", "AAA.NYSE", "USD", -1000, NA, "a2")))
+  d4 <- ticker_deviation_series(led3, fc, sess)
+  ok("докупка не ломает ряд", nrow(d4[ticker == "AAA"]) > 0)
+  ok("после докупки точка входа пересчитана",
+     isTRUE(all.equal(d4[date == last & ticker == "AAA", fact_pct], -20)))
+})
+
+cat("== 18. Выгрузка в типовом формате мониторинга ==\n")
 # Формат разобран по эталону владельца («OptionActual <дата>.xlsx»). Проверка
 # держит его строение: если лист «Реестр» переедет или у листа инструмента
 # сдвинется блок данных, файл перестанет открываться рабочими формулами —
@@ -1079,7 +1195,7 @@ local({
      any(grepl("нет данных", as.character(unlist(reg2)))))
 })
 
-cat("== 18. Сборка интерфейса ==\n")
+cat("== 19. Сборка интерфейса ==\n")
 # Гейт против класса дефектов «экран не собрался», который до выкладки ничем
 # не виден: перекрытые имена функций (jsonlite::validate поверх shiny::validate,
 # httr::config поверх plotly::config), пакет, нужный при СБОРКЕ UI, но

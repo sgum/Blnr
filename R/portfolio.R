@@ -262,6 +262,54 @@ portfolio_value_series <- function(ledger, sessions, currency = "USD") {
   out[]
 }
 
+# Невязка ПО КАЖДОЙ БУМАГЕ отдельно, по сессиям: как расхождение факта с
+# моделью менялось во времени.
+#
+# Зачем отдельно от портфельной невязки. Столбики «факт против модели» отвечают
+# на вопрос «насколько модель ошиблась к сегодняшнему дню», но не на вопрос
+# «ошибалась ли она так всегда». Бумага, которая три недели шла по модели и
+# обвалилась вчера, и бумага, которая разошлась с моделью с первого дня, дают
+# одинаковый столбик — а решения по ним разные.
+#
+# Период владения считается от ПОСЛЕДНЕЙ покупки бумаги, как и в таблице: при
+# докупке и факт, и модель пересчитываются от новой точки входа, поэтому на
+# графике в этот день будет ступенька. Это не артефакт: с этого дня меряется
+# другой период.
+#
+# NA там, где сравнивать нечего: нет цены за сессию, бумага ещё не куплена,
+# либо куплена до базы прогноза (forecast_between вернёт NA). Разрыв на
+# графике честнее линии, проведённой через пустоту.
+ticker_deviation_series <- function(ledger, forecast, sessions,
+                                    tickers = NULL) {
+  empty <- data.table::data.table(
+    date = as.Date(character()), ticker = character(), fact_pct = numeric(),
+    model_pct = numeric(), dev_pp = numeric()
+  )
+  if (nrow(ledger) == 0 || length(sessions) == 0) return(empty)
+  if (is.null(forecast) || nrow(forecast) == 0) return(empty)
+  sessions <- sort(as.Date(sessions))
+
+  rows <- lapply(sessions, function(d) {
+    pos <- ledger_positions_at(ledger, d)[quantity > 0]
+    if (!is.null(tickers)) pos <- pos[ticker %in% tickers]
+    if (nrow(pos) == 0) return(NULL)
+    entry <- pos$cost / pos$quantity
+    px <- vapply(pos$ticker, function(tk) md_close_on_date(tk, d), numeric(1))
+    anchor <- data.table::fifelse(is.na(pos$last_buy_date),
+                                  FORECAST_BASELINE_DATE, pos$last_buy_date)
+    mdl <- vapply(seq_len(nrow(pos)), function(i) {
+      forecast_between(forecast, pos$ticker[i], anchor[i], d)
+    }, numeric(1))
+    fact <- (px / entry - 1) * 100
+    fact[!is.finite(entry) | entry <= 0] <- NA_real_
+    data.table::data.table(date = d, ticker = pos$ticker, fact_pct = fact,
+                           model_pct = mdl, dev_pp = fact - mdl)
+  })
+  rows <- rows[!vapply(rows, is.null, logical(1))]
+  if (length(rows) == 0) return(empty)
+  data.table::rbindlist(rows)
+}
+
 # Невязка портфеля по сессиям: фактический результат от цен входа против того,
 # что обещала модель за тот же период владения.
 #
