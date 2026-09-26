@@ -190,16 +190,27 @@ shinyServer(function(input, output, session) {
   forecast_data   <- reactiveVal(NULL)
   forecast_source <- reactiveVal(NULL)
 
-  # Автозагрузка файла по умолчанию (FORECAST_XLSX_PATH из global.R) при
-  # старте сессии — если файл лежит на месте. Ошибка парсинга не критична:
-  # файл всегда можно подать вручную через кнопку «Прогноз…».
-  if (file.exists(FORECAST_XLSX_PATH)) {
-    auto_forecast <- tryCatch(parse_forecast_file(FORECAST_XLSX_PATH), error = function(e) NULL)
-    if (!is.null(auto_forecast)) {
-      forecast_data(auto_forecast)
-      forecast_source(sprintf("автозагрузка: %s", basename(FORECAST_XLSX_PATH)))
-    }
-  }
+  forecast_id <- reactiveVal(NULL)   # какой файл хранилища сейчас в работе
+  forecast_bump <- reactiveVal(0L)
+
+  # Прогноз берётся из ХРАНИЛИЩА (BLNR_STORE_DIR/forecasts), а не из одного
+  # файла по фиксированному пути: тот затирался каждым новым расчётом, жил вне
+  # хранилища данных и не помнил ни базы, ни автора. Подробности — в
+  # R/forecast_store.R. Первый запуск переносит прежний одиночный файл в
+  # хранилище, чтобы стенд не остался без прогноза и старый путь перестал быть
+  # источником правды сам собой.
+  tryCatch(forecast_store_seed(), error = function(e) NULL)
+  local({
+    latest <- tryCatch(forecast_store_latest(), error = function(e) NULL)
+    if (is.null(latest)) return(invisible(NULL))
+    parsed <- forecast_store_read(latest$file)
+    if (is.null(parsed) || nrow(parsed) == 0) return(invisible(NULL))
+    forecast_data(parsed)
+    forecast_id(latest$file)
+    forecast_source(sprintf("база %s \u00b7 %s",
+                            format(latest$base_date, "%d.%m.%Y"),
+                            latest$orig_name))
+  })
 
   observeEvent(input$open_forecast, {
     showModal(modalDialog(
@@ -211,7 +222,18 @@ shinyServer(function(input, output, session) {
              "инструменты реестра, столбцы — шаги .qM0, .qM1, … Значения — ",
              "уже накопленный относительный прогноз роста; шаг k ",
              "раскладывается на торговые дни от базы, заданной файлом."),
-      fileInput("forecast_file", "Файл (.xlsx)", accept = ".xlsx", width = "100%"),
+      tags$p(style = "font-size:12px;color:#5C5C5C",
+             "Загруженный файл остаётся в хранилище стенда рядом с рядами ",
+             "котировок и переживает выкатку. Прежние версии не затираются: ",
+             "любую можно вернуть в работу кнопкой «Взять» или скачать."),
+      uiOutput("forecast_versions"),
+      fileInput("forecast_file", "Загрузить новый файл (.xlsx)", accept = ".xlsx",
+                width = "100%"),
+      # База — день, НА КОТОРЫЙ посчитана модель: от него шаги .qM0, .qM1, …
+      # раскладываются по торговым дням. Раньше она была константой в коде, и
+      # любой файл ложился на 11.09.2026 независимо от того, когда его
+      # посчитали. Подставляется из имени файла, человеку остаётся проверить.
+      uiOutput("forecast_base_ui"),
       uiOutput("forecast_sheet_ui"),
       checkboxInput("forecast_is_share",
                     "Значения в файле — доли (0.012 = 1.2%), умножить на 100",
@@ -224,6 +246,16 @@ shinyServer(function(input, output, session) {
     ))
   })
 
+  output$forecast_base_ui <- renderUI({
+    req(input$forecast_file)
+    guess <- tryCatch(forecast_guess_base(input$forecast_file$datapath,
+                                          input$forecast_file$name),
+                      error = function(e) Sys.Date())
+    dateInput("forecast_base", "База прогноза — день, на который посчитана модель",
+              value = guess, format = "dd.mm.yyyy", language = "ru",
+              width = "260px")
+  })
+
   output$forecast_sheet_ui <- renderUI({
     req(input$forecast_file)
     sheets <- tryCatch(forecast_sheet_names(input$forecast_file$datapath),
@@ -233,22 +265,103 @@ shinyServer(function(input, output, session) {
     selectInput("forecast_sheet", "Лист", choices = sheets, selected = sel)
   })
 
-  observe({
-    req(input$forecast_file)
+  # Поданный файл сразу кладётся В ХРАНИЛИЩЕ, а не просто разбирается в
+  # память: временный файл fileInput живёт до конца сессии Shiny, и прогноз
+  # пропадал при перезапуске воркера — то есть при каждой выкатке, и сразу у
+  # всех. Прежние версии при этом не затираются.
+  observeEvent(input$forecast_file, {
     sheet <- input$forecast_sheet %||% forecast_default_sheet(input$forecast_file$datapath)
-    parsed <- tryCatch(
-      parse_forecast_file(input$forecast_file$datapath, sheet = sheet,
-                          as_fraction = isTRUE(input$forecast_is_share)),
-      error = function(e) {
-        showNotification(paste("Ошибка чтения файла прогноза:", conditionMessage(e)),
-                          type = "error", duration = 10)
-        NULL
-      }
-    )
-    if (!is.null(parsed)) {
-      forecast_data(parsed)
-      forecast_source(sprintf("%s, лист %s", input$forecast_file$name, sheet))
+    res <- tryCatch(
+      forecast_store_save(input$forecast_file$datapath,
+                          orig_name = input$forecast_file$name,
+                          sheet = sheet,
+                          as_fraction = isTRUE(input$forecast_is_share),
+                          base_date = input$forecast_base,
+                          user = USER$login %||% ""),
+      error = function(e) list(ok = FALSE, message = conditionMessage(e)))
+    if (!isTRUE(res$ok)) {
+      showNotification(paste("Прогноз не сохранён:", res$message),
+                        type = "error", duration = 12)
+      return(invisible(NULL))
     }
+    parsed <- forecast_store_read(res$id)
+    if (is.null(parsed)) {
+      showNotification("Файл сохранён, но не читается обратно.",
+                        type = "error", duration = 12)
+      return(invisible(NULL))
+    }
+    forecast_data(parsed)
+    forecast_id(res$id)
+    r <- forecast_registry()[file == res$id]
+    forecast_source(sprintf("база %s \u00b7 %s",
+                            format(r$base_date[1], "%d.%m.%Y"), r$orig_name[1]))
+    forecast_bump(forecast_bump() + 1L)
+    showNotification(res$message, type = "message", duration = 8)
+  }, ignoreInit = TRUE)
+
+  # Переключение на любую сохранённую версию: «что обещала позапрошлая»
+  # перестаёт быть археологией.
+  observeEvent(input$forecast_use, {
+    id <- as.character(input$forecast_use)
+    parsed <- forecast_store_read(id)
+    if (is.null(parsed)) {
+      showNotification("Эта версия прогноза не читается.", type = "error",
+                        duration = 10)
+      return(invisible(NULL))
+    }
+    r <- forecast_registry()[file == id]
+    forecast_data(parsed)
+    forecast_id(id)
+    forecast_source(sprintf("база %s \u00b7 %s",
+                            format(r$base_date[1], "%d.%m.%Y"), r$orig_name[1]))
+    forecast_bump(forecast_bump() + 1L)
+  })
+
+  # Реестр версий читается по ИЗМЕНЕНИЮ ФАЙЛА, а не один раз за сессию:
+  # прогноз кладёт хранилище, общее для всех сессий стенда, и версия,
+  # загруженная соседом (или ночным заданием), иначе не появилась бы в списке
+  # до перезахода. Проверка — один stat раз в три секунды.
+  forecast_reg <- reactivePoll(
+    3000, session,
+    checkFunc = function() {
+      f <- forecast_registry_path()
+      if (file.exists(f)) as.numeric(file.mtime(f)) else 0
+    },
+    valueFunc = function() {
+      tryCatch(forecast_registry(), error = function(e) forecast_registry_empty())
+    })
+
+  output$forecast_versions <- renderUI({
+    forecast_bump()
+    reg <- forecast_reg()
+    if (nrow(reg) == 0) {
+      return(tags$p(style = "font-size:12px;color:#8a5d00",
+                    "В хранилище ещё нет ни одного прогноза. Первый же ",
+                    "загруженный файл останется здесь и переживёт выкатку."))
+    }
+    cur <- forecast_id()
+    tags$div(
+      class = "fc-list",
+      tags$div(class = "fc-head", sprintf("В хранилище %d %s", nrow(reg),
+        if (nrow(reg) %% 10 == 1 && nrow(reg) %% 100 != 11) "версия" else "версии")),
+      lapply(seq_len(nrow(reg)), function(i) {
+        r <- reg[i]
+        is_cur <- identical(r$file, cur)
+        tags$div(
+          class = paste("fc-row", if (is_cur) "on"),
+          tags$b(format(r$base_date, "%d.%m.%Y")),
+          tags$span(class = "nm", title = r$orig_name, r$orig_name),
+          tags$span(class = "mut", sprintf("%d бум. \u00b7 до %s", r$tickers,
+                                           format(r$horizon, "%m.%Y"))),
+          tags$span(class = "mut", sprintf("%s%s",
+                    format(r$saved_at, "%d.%m.%Y"),
+                    if (nzchar(r$user %||% "")) paste0(" \u00b7 ", r$user) else "")),
+          if (is_cur) tags$span(class = "fc-cur", "в работе")
+          else tags$button(class = "fc-use", onclick = sprintf(
+            "Shiny.setInputValue('forecast_use','%s',{priority:'event'})", r$file),
+            "Взять"))
+      })
+    )
   })
 
   output$forecast_modal_status <- renderUI({
@@ -630,25 +743,27 @@ shinyServer(function(input, output, session) {
       positions,
       panel(
         if (is_future()) "Ожидание по модели" else "Факт против модели",
-        sub = if (is_future())
-                paste0("к ", format(sel_date(), "%d.%m.%Y"))
-              else format(sel_date(), "%d.%m.%Y"),
-        tip = paste0("По каждой бумаге за период владения: фактический рост ",
-                     "от цены входа рядом с прогнозом модели за тот же ",
-                     "период. Расхождение столбиков и есть повод для решения ",
-                     "по позиции. «Динамика» показывает то же расхождение по ",
-                     "сессиям, в процентных пунктах: бумага, которая три ",
-                     "недели шла по модели и обвалилась вчера, и бумага, ",
-                     "разошедшаяся с моделью с первого дня, дают одинаковый ",
-                     "столбик, а решения по ним разные. Тикеры под шапкой ",
-                     "выключаются щелчком — одна бумага с большим ",
-                     "расхождением сжимает остальные в полоску, и на общей ",
-                     "шкале их уже не прочитать. Период владения считается от ",
-                     "ПОСЛЕДНЕЙ покупки, поэтому в день докупки на линии ",
-                     "ступенька: с этого дня меряется другой период."),
-        # Переключатель вида — ОТДЕЛЬНЫЙ вывод, а не разметка в шапке: иначе
-        # каждое переключение пересобирало бы всю колонку вместе с таблицей
-        # позиций (и подсветка активной кнопки отставала бы на такт).
+        # Подпись зависит от вида, поэтому она ОТДЕЛЬНЫЙ вывод: столбики
+        # меряют от моей цены входа, линии — от базы прогноза, и молчать о
+        # такой разнице нельзя (см. vs_time_plot).
+        sub = textOutput("vs_sub", inline = TRUE),
+        tip = paste0(
+          "Два вида отвечают на РАЗНЫЕ вопросы, и точка отсчёта у них разная. ",
+          "«На дату»: по каждой бумаге за период владения — фактический рост ",
+          "от МОЕЙ цены входа рядом с прогнозом модели за тот же период. Это ",
+          "результат позиции, расхождение столбиков и есть повод для решения. ",
+          "«Динамика»: ошибка САМОЙ МОДЕЛИ по сессиям, в процентных пунктах, ",
+          "от базы прогноза — то есть от дня, на который модель посчитана. К ",
+          "покупкам она отношения не имеет и живёт, даже если бумага ",
+          "докуплена вчера. Считать динамику от последней покупки нельзя: ",
+          "после докупки ряд схлопывается в одну точку. Зачем она: бумага, ",
+          "три недели шедшая по модели и обвалившаяся вчера, и бумага, ",
+          "разошедшаяся с первого дня, дают ОДИНАКОВЫЙ столбик, а решения по ",
+          "ним разные. Тикеры под шапкой выключаются щелчком — одна бумага с ",
+          "большим расхождением сжимает остальные в полоску, и на общей шкале ",
+          "их уже не прочитать; в портфеле и в загрузке бумага при этом ",
+          "остаётся. Пунктирный чип — бумаги нет в модели, на «Динамике» её ",
+          "линии не будет."),
         right = uiOutput("vs_tabs"),
         body_class = "bd--flush",
         tags$div(class = "vs",
@@ -1227,8 +1342,18 @@ shinyServer(function(input, output, session) {
                 else if (tk %in% have) tags$span(class = "mut", "ряд есть")
                 else tags$span(class = "neg", "нет ряда")),
         tags$td(class = "r",
-                if (in_port) tags$span(class = "mut", title =
-                     "Бумага в портфеле — из наблюдения не выключить", "\u2014")
+                # У бумаги в портфеле переключателя нет: без её ряда нечем
+                # считать стоимость и историю позиции. Раньше здесь стоял
+                # ПРОЧЕРК с объяснением в title — то есть объяснения не было:
+                # прочерк не выглядит тем, на что наводят курсор, и строка
+                # читалась как «сломалось» (замечание владельца 27.09.2026).
+                # Теперь причина написана словами прямо в колонке.
+                if (in_port) tags$span(
+                     class = "wl-sw is-held",
+                     title = paste0(tk, " сейчас в портфеле: пока бумага на ",
+                                    "счёте, её ряд нужен стоимости и истории ",
+                                    "позиции. Выключить можно после продажи."),
+                     "в портфеле")
                 else tags$button(
                   class = if (is_on) "wl-sw" else "wl-sw off",
                   title = if (is_on)
@@ -1488,6 +1613,17 @@ shinyServer(function(input, output, session) {
     if (length(keep) == 0) all_tk else keep
   })
 
+  output$vs_sub <- renderText({
+    if (identical(vs_view(), "time")) {
+      fd <- forecast_data()
+      b <- if (!is.null(fd) && nrow(fd) > 0) min(fd$date) else NA
+      return(if (is.na(b)) "ошибка модели по сессиям"
+             else sprintf("ошибка модели от базы %s", format(b, "%d.%m.%Y")))
+    }
+    if (is_future()) paste0("к ", format(sel_date(), "%d.%m.%Y"))
+    else format(sel_date(), "%d.%m.%Y")
+  })
+
   output$vs_tabs <- renderUI({
     tags$div(
       class = "seg sm",
@@ -1504,23 +1640,29 @@ shinyServer(function(input, output, session) {
     data.table::setorder(m, ticker)
     all_tk <- m$ticker
     off <- vs_off()
+    fd <- forecast_data()
+    fc_tickers <- if (is.null(fd) || nrow(fd) == 0) character() else unique(fd$ticker)
     tags$div(
       class = "vs-chips",
       lapply(seq_along(all_tk), function(i) {
         tk <- all_tk[i]
         is_off <- tk %in% off
-        # Бумага без строки в модели сравнивать не с чем — на «Динамике» её
-        # линии не будет вовсе. Об этом говорит сам чип (пунктир + причина под
-        # курсором), а не пустая безымянная линия в легенде: именно так GOOGL
-        # и попадал на график — линией из нуля точек.
-        no_model <- !is.finite(m$forecast_since_entry_pct[i])
+        # «Не с чем сравнить» означает РАЗНОЕ в двух видах, и один флаг на оба
+        # врал бы: IBM куплен до базы прогноза, поэтому в столбиках модели у
+        # него нет, а ошибка самой модели по нему считается прекрасно — она от
+        # покупок не зависит.
+        no_model <- if (identical(vs_view(), "time")) !(tk %in% fc_tickers)
+                    else !is.finite(m$forecast_since_entry_pct[i])
         tags$button(
           class = paste("vs-chip", if (is_off) "off", if (no_model) "nomodel"),
           title = paste0(
             if (is_off) paste("Вернуть", tk, "на график")
             else paste("Убрать", tk, "с графика; в портфеле бумага остаётся"),
-            if (no_model) paste0(" \u00b7 сравнения с моделью нет: ",
-                                 m$model_gap[i] %||% "нет в модели")),
+            if (no_model) {
+              if (identical(vs_view(), "time")) " \u00b7 этой бумаги нет в модели"
+              else paste0(" \u00b7 сравнения за период владения нет: ",
+                          m$model_gap[i] %||% "нет в модели")
+            }),
           onclick = sprintf(
             "Shiny.setInputValue('vs_toggle','%s',{priority:'event'})", tk),
           tk)
@@ -1556,11 +1698,18 @@ shinyServer(function(input, output, session) {
   # Ноль означает «шла ровно по модели», поэтому нулевая линия рисуется всегда:
   # без неё знак расхождения приходится вычислять по подписям оси.
   vs_time_plot <- function(keep) {
+    # ОТ БАЗЫ ПРОГНОЗА, а не от последней покупки. Считая от покупки, график
+    # мерит период владения: 25.09.2026 шесть бумаг из семи были докуплены
+    # накануне, ряд получился длиной в одну сессию, и plotly растянул ось на
+    # миллисекунду вокруг единственной точки — виджет выглядел пустым.
+    # Ошибка МОДЕЛИ к покупкам отношения не имеет: она существует с того дня,
+    # на который модель посчитана.
     d <- ticker_deviation_series(ledger_now(), forecast_data(),
-                                 timeline_sessions(), tickers = keep)
+                                 timeline_sessions(), tickers = keep,
+                                 anchor = "forecast_base")
     shiny::validate(shiny::need(
       nrow(d) > 0 && any(is.finite(d$dev_pp)),
-      "Сравнивать нечего: по выбранным бумагам нет прогноза за период владения."))
+      "Сравнивать нечего: по выбранным бумагам нет строк в модели."))
     # Бумага, по которой сравнивать не с чем (нет строки в модели, куплена до
     # прогноза), даёт ряд из одних NA. plotly рисует такой ряд пустой линией
     # БЕЗ ИМЕНИ, и в легенде появляется безымянный пункт, который ничего не

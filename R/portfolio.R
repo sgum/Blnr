@@ -271,43 +271,81 @@ portfolio_value_series <- function(ledger, sessions, currency = "USD") {
 # обвалилась вчера, и бумага, которая разошлась с моделью с первого дня, дают
 # одинаковый столбик — а решения по ним разные.
 #
-# Период владения считается от ПОСЛЕДНЕЙ покупки бумаги, как и в таблице: при
-# докупке и факт, и модель пересчитываются от новой точки входа, поэтому на
-# графике в этот день будет ступенька. Это не артефакт: с этого дня меряется
-# другой период.
+# ТОЧКА ОТСЧЁТА. Два разных вопроса требуют двух разных точек, и подменять их
+# друг другом нельзя:
 #
-# NA там, где сравнивать нечего: нет цены за сессию, бумага ещё не куплена,
-# либо куплена до базы прогноза (forecast_between вернёт NA). Разрыв на
-# графике честнее линии, проведённой через пустоту.
+#   anchor = "forecast_base" — ошибка САМОЙ МОДЕЛИ: цена росла от базы
+#     прогноза так-то, модель обещала так-то. К покупкам отношения не имеет и
+#     существует, даже если бумага не куплена вовсе.
+#   anchor = "last_buy" — результат МОЕЙ ПОЗИЦИИ против обещанного за период
+#     владения. Ровно то, что показывают столбики и таблица.
+#
+# По умолчанию — база прогноза. «От последней покупки» на динамике даёт ряд
+# длиной в период владения, и после любой докупки он схлопывается в точку: на
+# стенде 25.09.2026 шесть бумаг из семи были докуплены 24.09, и весь график
+# состоял из одной точки, а ось plotly растянулась на миллисекунду вокруг неё.
+# Это не ошибка расчёта — это неверно выбранный вопрос.
+#
+# NA там, где сравнивать нечего: нет цены за сессию или за базовую дату, нет
+# строки в модели, период нулевой. Разрыв на графике честнее линии,
+# проведённой через пустоту.
 ticker_deviation_series <- function(ledger, forecast, sessions,
-                                    tickers = NULL) {
+                                    tickers = NULL,
+                                    anchor = c("forecast_base", "last_buy")) {
+  anchor <- match.arg(anchor)
   empty <- data.table::data.table(
     date = as.Date(character()), ticker = character(), fact_pct = numeric(),
-    model_pct = numeric(), dev_pp = numeric()
+    model_pct = numeric(), dev_pp = numeric(), base_date = as.Date(character())
   )
-  if (nrow(ledger) == 0 || length(sessions) == 0) return(empty)
+  if (length(sessions) == 0) return(empty)
   if (is.null(forecast) || nrow(forecast) == 0) return(empty)
   sessions <- sort(as.Date(sessions))
 
-  rows <- lapply(sessions, function(d) {
-    pos <- ledger_positions_at(ledger, d)[quantity > 0]
-    if (!is.null(tickers)) pos <- pos[ticker %in% tickers]
-    if (nrow(pos) == 0) return(NULL)
-    entry <- pos$cost / pos$quantity
-    px <- vapply(pos$ticker, function(tk) md_close_on_date(tk, d), numeric(1))
-    anchor <- data.table::fifelse(is.na(pos$last_buy_date),
+  if (identical(anchor, "forecast_base")) {
+    tks <- if (is.null(tickers)) sort(unique(forecast$ticker))
+           else intersect(sort(unique(forecast$ticker)), tickers)
+    if (length(tks) == 0) return(empty)
+    # База берётся ИЗ ФАЙЛА по каждой бумаге, а не из глобальной константы:
+    # файл задаёт свою базу, и строки разных бумаг могут начинаться с разных
+    # дат (см. forecast_between и docs/dev.md).
+    base <- forecast[ticker %in% tks, .(base_date = min(date)), by = ticker]
+    rows <- lapply(seq_len(nrow(base)), function(i) {
+      tk <- base$ticker[i]; b <- base$base_date[i]
+      px0 <- md_close_on_date(tk, b)
+      if (!is.finite(px0) || px0 <= 0) return(NULL)
+      d <- sessions[sessions > b]
+      if (length(d) == 0) return(NULL)
+      px <- vapply(d, function(x) md_close_on_date(tk, x), numeric(1))
+      mdl <- vapply(d, function(x) forecast_between(forecast, tk, b, x), numeric(1))
+      fact <- (px / px0 - 1) * 100
+      data.table::data.table(date = d, ticker = tk, fact_pct = fact,
+                             model_pct = mdl, dev_pp = fact - mdl, base_date = b)
+    })
+  } else {
+    if (nrow(ledger) == 0) return(empty)
+    rows <- lapply(sessions, function(d) {
+      pos <- ledger_positions_at(ledger, d)[quantity > 0]
+      if (!is.null(tickers)) pos <- pos[ticker %in% tickers]
+      if (nrow(pos) == 0) return(NULL)
+      entry <- pos$cost / pos$quantity
+      px <- vapply(pos$ticker, function(tk) md_close_on_date(tk, d), numeric(1))
+      base <- data.table::fifelse(is.na(pos$last_buy_date),
                                   FORECAST_BASELINE_DATE, pos$last_buy_date)
-    mdl <- vapply(seq_len(nrow(pos)), function(i) {
-      forecast_between(forecast, pos$ticker[i], anchor[i], d)
-    }, numeric(1))
-    fact <- (px / entry - 1) * 100
-    fact[!is.finite(entry) | entry <= 0] <- NA_real_
-    data.table::data.table(date = d, ticker = pos$ticker, fact_pct = fact,
-                           model_pct = mdl, dev_pp = fact - mdl)
-  })
+      mdl <- vapply(seq_len(nrow(pos)), function(i) {
+        forecast_between(forecast, pos$ticker[i], base[i], d)
+      }, numeric(1))
+      fact <- (px / entry - 1) * 100
+      fact[!is.finite(entry) | entry <= 0] <- NA_real_
+      data.table::data.table(date = d, ticker = pos$ticker, fact_pct = fact,
+                             model_pct = mdl, dev_pp = fact - mdl,
+                             base_date = base)
+    })
+  }
   rows <- rows[!vapply(rows, is.null, logical(1))]
   if (length(rows) == 0) return(empty)
-  data.table::rbindlist(rows)
+  out <- data.table::rbindlist(rows)
+  data.table::setorder(out, ticker, date)
+  out[]
 }
 
 # Невязка портфеля по сессиям: фактический результат от цен входа против того,

@@ -176,6 +176,25 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
 .bd--plot>div,.bd--plot .plotly,.bd--plot .html-widget{height:100%!important}
 .bd--flush{padding:0;display:flex;flex-direction:column}
 .empty{padding:14px 12px;font-size:12px;color:var(--dim)}
+/* --- список сохранённых прогнозов в модалке --- */
+.fc-list{border:1px solid var(--border);border-radius:8px;overflow:hidden;
+  margin-bottom:10px;max-height:190px;overflow-y:auto}
+.fc-head{background:var(--muted);padding:5px 10px;font-size:10.5px;
+  font-weight:700;color:var(--dim);border-bottom:1px solid var(--border);
+  position:sticky;top:0}
+.fc-row{display:flex;gap:10px;align-items:center;padding:5px 10px;
+  font-size:11.5px;border-bottom:1px solid #f0f2f5}
+.fc-row:last-child{border-bottom:0}
+.fc-row.on{background:#fff7e6}
+.fc-row .nm{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.fc-row .mut{color:var(--faint);white-space:nowrap}
+.fc-cur{font-size:10.5px;font-weight:700;color:var(--orange-d);
+  white-space:nowrap}
+.fc-use{border:0;background:var(--orange);color:var(--on-orange);
+  font-weight:700;font-size:10.5px;padding:3px 9px;border-radius:5px;
+  cursor:pointer}
+
 /* --- виджет «Факт против модели»: чипы тикеров --- */
 .vs{display:flex;flex-direction:column;min-height:0;height:100%}
 .vs-plot{flex:1 1 auto;min-height:0;padding:2px}
@@ -222,6 +241,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
 .wl-sw:hover{border-color:var(--orange);color:var(--text)}
 .wl-sw.off{background:var(--orange);border-color:var(--orange);
   color:var(--on-orange)}
+/* Бумага в портфеле: тот же размер, что у переключателя, но не кнопка —
+   нажимать нечего, и выглядеть нажимаемой она не должна. */
+.wl-sw.is-held{display:inline-block;border:1px dashed var(--border);
+  background:var(--muted);color:var(--dim);cursor:help}
 .wl-row--off td{color:var(--faint)}
 .wl-row--off td b{font-weight:600}
 .wl-src{font-size:10px;color:var(--faint);margin-left:5px;font-weight:600}

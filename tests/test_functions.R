@@ -36,6 +36,7 @@ source("R/snapshots.R"); source("R/watchlist.R"); source("R/store.R")
 source("R/marketdata.R")
 source("R/exante_api.R"); source("R/catalog.R"); source("R/ledger.R")
 source("R/portfolio.R"); source("R/forecast.R")
+source("R/forecast_store.R")
 source("R/auth_ad.R"); source("R/auth_session.R")
 source("R/export_xlsx.R"); source("R/ui_kit.R")
 
@@ -1055,7 +1056,7 @@ local({
     data.table(date = sess, ticker = "AAA", forecast_growth_pct = 0),
     data.table(date = sess, ticker = "BBB", forecast_growth_pct = 0)))
 
-  d <- ticker_deviation_series(led, fc, sess)
+  d <- ticker_deviation_series(led, fc, sess, anchor = "last_buy")
   ok("ряд считается по каждой бумаге отдельно",
      nrow(d) > 0 && identical(sort(unique(d$ticker)), c("AAA", "BBB")))
   ok("до покупки сессий нет",
@@ -1079,7 +1080,8 @@ local({
      isTRUE(all.equal(d$dev_pp, d$fact_pct - d$model_pct)))
 
   # Фильтр по бумагам — то самое выключение тикера на экране.
-  one <- ticker_deviation_series(led, fc, sess, tickers = "BBB")
+  one <- ticker_deviation_series(led, fc, sess, tickers = "BBB",
+                                 anchor = "last_buy")
   ok("фильтр оставляет только выбранные бумаги",
      identical(unique(one$ticker), "BBB"))
   ok("и не меняет значения оставшейся",
@@ -1093,7 +1095,7 @@ local({
     leg(7, "2026-06-02", "TRADE", "CCC.CBOE.20G2026.C220", "USD", -200, NA, "c1")))
   fc2 <- rbindlist(list(fc, data.table(date = sess, ticker = "CCC.CBOE.20G2026.C220",
                                        forecast_growth_pct = 0)))
-  d2 <- ticker_deviation_series(led2, fc2, sess)
+  d2 <- ticker_deviation_series(led2, fc2, sess, anchor = "last_buy")
   ok("неоценимый инструмент даёт NA, а не ноль",
      nrow(d2[ticker == "CCC.CBOE.20G2026.C220"]) > 0 &&
      all(is.na(d2[ticker == "CCC.CBOE.20G2026.C220", dev_pp])))
@@ -1112,29 +1114,167 @@ local({
     leg(7, "2026-06-02", "TRADE", "DDD.NYSE", "USD", -200, NA, "d1")))
   fc3w <- rbindlist(list(fc, data.table(date = sess, ticker = "DDD",
                                         forecast_growth_pct = 0)))
-  d2b <- ticker_deviation_series(led3w, fc3w, sess)
+  d2b <- ticker_deviation_series(led3w, fc3w, sess, anchor = "last_buy")
   ok("после конца ряда держится последняя цена, а не ноль",
      isTRUE(all.equal(d2b[date == last & ticker == "DDD", dev_pp], 0)))
 
   # Куплено ДО базы прогноза — сравнивать нечего (тот же запрет, что в
   # таблице: иначе бумаге приписывается прогноз, которого на входе не было).
   fc_late <- data.table(date = sess[6:12], ticker = "AAA", forecast_growth_pct = 0)
-  d3 <- ticker_deviation_series(led, fc_late, sess)
+  d3 <- ticker_deviation_series(led, fc_late, sess, anchor = "last_buy")
   ok("куплено до базы прогноза -> расхождения нет",
      all(is.na(d3[ticker == "AAA", dev_pp])))
+
+  # --- точка отсчёта по умолчанию: БАЗА ПРОГНОЗА ----------------------------
+  # Иначе график мерит период владения, и после докупки от него остаётся одна
+  # точка: ровно так виджет и оказался пустым на стенде 25.09.2026 — шесть
+  # бумаг из семи были докуплены накануне.
+  # Воспроизводим стенд: бумага куплена НАКАНУНЕ последней сессии.
+  store_write_candles("EEE", data.table(
+    date = sess, open = 1, high = 2, low = 0.5,
+    close = c(rep(100, 11), 80), volume = NA_real_))
+  led_fresh <- rbindlist(list(led,
+    leg(20, "2026-06-11", "TRADE", "EEE.NYSE", "EEE.NYSE", 10, 100, "e1"),
+    leg(21, "2026-06-11", "TRADE", "EEE.NYSE", "USD", -1000, NA, "e1")))
+  fc_e <- rbindlist(list(fc, data.table(date = sess, ticker = "EEE",
+                                        forecast_growth_pct = 0)))
+  from_buy <- ticker_deviation_series(led_fresh, fc_e, sess, tickers = "EEE",
+                                      anchor = "last_buy")
+  from_base <- ticker_deviation_series(led_fresh, fc_e, sess, tickers = "EEE")
+  ok("от последней покупки остаётся ОДНА точка — графика нет",
+     nrow(from_buy[is.finite(dev_pp)]) == 1L)
+  ok("от базы прогноза ряд остаётся длинным",
+     nrow(from_base[is.finite(dev_pp)]) >= 10)
+  ok("умолчание — именно база прогноза",
+     identical(unique(from_base$base_date), min(fc_e$date)))
+
+  # Ошибка модели считается от цены на БАЗОВУЮ дату, а не от цены покупки:
+  # к покупкам она отношения не имеет и существует, даже если бумаги нет в
+  # портфеле вовсе.
+  no_pos <- ticker_deviation_series(data.table(), fc_e, sess, tickers = "EEE")
+  ok("ошибка модели считается и без единой покупки",
+     nrow(no_pos[is.finite(dev_pp)]) > 0)
+  ok("и совпадает с расчётом при наличии позиции",
+     isTRUE(all.equal(no_pos[date == last, dev_pp],
+                      from_base[date == last, dev_pp])))
+  # AAA стоил 100 на базе и 80 в конце при нулевой модели — ровно −20 пп.
+  ok("арифметика от базы прогноза верна",
+     isTRUE(all.equal(from_base[date == last, dev_pp], -20)))
+
+  # Бумаги нет в модели — ряда нет вовсе, а не линия из NA: именно пустая
+  # безымянная линия и появлялась в легенде (GOOGL).
+  ok("бумаги нет в модели -> в ряду её нет",
+     nrow(ticker_deviation_series(led, fc, sess, tickers = "ZZZ")) == 0)
 
   # Период считается от ПОСЛЕДНЕЙ покупки: докупка переносит точку отсчёта,
   # и с этого дня меряется другой период.
   led3 <- rbindlist(list(led,
     leg(8, "2026-06-09", "TRADE", "AAA.NYSE", "AAA.NYSE", 10, 100, "a2"),
     leg(9, "2026-06-09", "TRADE", "AAA.NYSE", "USD", -1000, NA, "a2")))
-  d4 <- ticker_deviation_series(led3, fc, sess)
+  d4 <- ticker_deviation_series(led3, fc, sess, anchor = "last_buy")
   ok("докупка не ломает ряд", nrow(d4[ticker == "AAA"]) > 0)
   ok("после докупки точка входа пересчитана",
      isTRUE(all.equal(d4[date == last & ticker == "AAA", fact_pct], -20)))
 })
 
-cat("== 18. Выгрузка в типовом формате мониторинга ==\n")
+cat("== 18. Хранилище экселей с прогнозом ==\n")
+# Прежде путь к прогнозу указывал на ОДИН файл: новый расчёт ложился поверх
+# старого, прежняя версия исчезала, а файл, поданный с экрана, жил до конца
+# сессии Shiny — то есть пропадал у всех при первой же выкатке.
+local({
+  tmpstore <- file.path(tempdir(), paste0("fcs_", as.integer(runif(1, 1e6, 9e6))))
+  old_dir <- BLNR_STORE_DIR; BLNR_STORE_DIR <<- tmpstore
+  on.exit({ BLNR_STORE_DIR <<- old_dir; unlink(tmpstore, recursive = TRUE) }, add = TRUE)
+
+  # Собираем два РАЗНЫХ файла прогноза в формате Q_mean_var: строка-шапка
+  # «mean» в первом столбце, ниже инструменты, значения с третьего столбца.
+  mk <- function(vals) {
+    path <- tempfile(fileext = ".xlsx")
+    m <- matrix("", nrow = 4, ncol = 6)
+    m[1, 1] <- "mean"
+    m[2, 1] <- "Apple";  m[2, 3:6] <- as.character(c(0, vals))
+    m[3, 1] <- "Nvidia"; m[3, 3:6] <- as.character(c(0, vals * 2))
+    m[4, 1] <- "var"
+    wb <- openxlsx::createWorkbook()
+    openxlsx::addWorksheet(wb, "Q_mean_var")
+    openxlsx::writeData(wb, "Q_mean_var", as.data.frame(m), colNames = FALSE)
+    openxlsx::saveWorkbook(wb, path, overwrite = TRUE)
+    path
+  }
+  f1 <- mk(c(0.01, 0.02, 0.03))
+  f2 <- mk(c(0.02, 0.04, 0.06))
+
+  ok("пустое хранилище -> пустой реестр, а не ошибка",
+     nrow(forecast_registry()) == 0 && is.null(forecast_store_latest()))
+
+  r1 <- forecast_store_save(f1, orig_name = "прогноз сентябрь.xlsx",
+                            base_date = as.Date("2026-09-11"),
+                            user = "s.gumerov")
+  ok("файл сохраняется", isTRUE(r1$ok))
+  ok("и лежит в хранилище, а не во временном каталоге",
+     file.exists(file.path(forecast_dir(), r1$id)))
+  ok("в реестре появилась запись", nrow(forecast_registry()) == 1L)
+  ok("база прогноза сохранена как заявлена",
+     identical(forecast_registry()$base_date[1], as.Date("2026-09-11")))
+  ok("исходное имя и автор сохранены",
+     identical(forecast_registry()$orig_name[1], "прогноз сентябрь.xlsx") &&
+     identical(forecast_registry()$user[1], "s.gumerov"))
+
+  # Тот же файл второй раз не заводит второй записи: иначе список версий
+  # зарастал бы повторами одного расчёта.
+  again <- forecast_store_save(f1, orig_name = "он же ещё раз.xlsx",
+                               base_date = as.Date("2026-09-11"))
+  ok("повторная загрузка того же файла не плодит версий",
+     isTRUE(again$ok) && isTRUE(again$duplicate) && nrow(forecast_registry()) == 1L)
+
+  # Новый расчёт НЕ затирает прежний — ради этого всё и затевалось.
+  r2 <- forecast_store_save(f2, orig_name = "прогноз 25.09.xlsx",
+                            base_date = as.Date("2026-09-25"))
+  ok("второй расчёт добавляется, а не заменяет", nrow(forecast_registry()) == 2L)
+  ok("прежний файл остался на диске",
+     file.exists(file.path(forecast_dir(), r1$id)))
+  ok("имена файлов различаются", !identical(r1$id, r2$id))
+
+  # Самый свежий — по базе прогноза, а не по времени загрузки: старый расчёт,
+  # положенный последним, не должен становиться действующим.
+  ok("свежим считается прогноз с поздней базой",
+     identical(forecast_store_latest()$file, r2$id))
+
+  back <- forecast_store_read(r1$id)
+  ok("прежняя версия читается обратно", !is.null(back) && nrow(back) > 0)
+  ok("и разложена от СВОЕЙ базы, а не от общей константы",
+     identical(min(back$date), as.Date("2026-09-11")))
+  back2 <- forecast_store_read(r2$id)
+  ok("у второй версии своя база",
+     identical(min(back2$date), as.Date("2026-09-25")))
+  ok("две версии не ложатся на одну базу",
+     !identical(min(back$date), min(back2$date)))
+
+  # База из имени файла: человеку остаётся проверить, а не вспоминать.
+  ok("база угадывается из имени файла",
+     identical(forecast_guess_base(f1, "quotes 2026-09-13.xlsx"),
+               as.Date("2026-09-13")))
+  ok("и из имени с точками тоже",
+     identical(forecast_guess_base(f1, "прогноз 2026.10.02.xlsx"),
+               as.Date("2026-10-02")))
+  ok("несуществующий id -> NULL, а не ошибка",
+     is.null(forecast_store_read("нет-такого.xlsx")))
+
+  # Запись без файла на диске прячется: иначе стенд предложил бы выбрать
+  # прогноз, которого нет.
+  unlink(file.path(forecast_dir(), r1$id))
+  ok("запись без файла из реестра не показывается",
+     nrow(forecast_registry()) == 1L &&
+     identical(forecast_registry()$file[1], r2$id))
+
+  # Мусор вместо прогноза не должен ни падать, ни попадать в реестру.
+  bad <- tempfile(fileext = ".xlsx"); writeLines("не эксель", bad)
+  rb <- forecast_store_save(bad, orig_name = "мусор.xlsx")
+  ok("нечитаемый файл отклоняется", !isTRUE(rb$ok))
+  ok("и в реестр не попадает", nrow(forecast_registry()) == 1L)
+})
+
+cat("== 19. Выгрузка в типовом формате мониторинга ==\n")
 # Формат разобран по эталону владельца («OptionActual <дата>.xlsx»). Проверка
 # держит его строение: если лист «Реестр» переедет или у листа инструмента
 # сдвинется блок данных, файл перестанет открываться рабочими формулами —
@@ -1195,7 +1335,7 @@ local({
      any(grepl("нет данных", as.character(unlist(reg2)))))
 })
 
-cat("== 19. Сборка интерфейса ==\n")
+cat("== 20. Сборка интерфейса ==\n")
 # Гейт против класса дефектов «экран не собрался», который до выкладки ничем
 # не виден: перекрытые имена функций (jsonlite::validate поверх shiny::validate,
 # httr::config поверх plotly::config), пакет, нужный при СБОРКЕ UI, но
