@@ -55,6 +55,11 @@ if (!md_has_token()) {
 
 wl <- watchlist_active()
 say("Реестр наблюдения: %d инструментов, глубина %d дней.", nrow(wl), BLNR_STORE_DAYS)
+# Что было ДО прогона — чтобы пустая загрузка была видна в логе строкой, а не
+# вычислялась сравнением двух сборок. Именно так пряталась пустышка: прогон
+# печатал «Готово, 24 инструмента, 9600 строк» по данным из собственного
+# хранилища и отчитывался зелёным.
+before <- store_status()$last_date
 say("Хранилище: %s", normalizePath(BLNR_STORE_DIR, mustWork = FALSE))
 
 # (1) Прежняя версия — ДО записи.
@@ -112,8 +117,18 @@ store_write_meta(list(
   rows        = sum(vapply(fetched, nrow, integer(1)))
 ))
 
+after <- as.Date(last_date, origin = "1970-01-01")
 say("")
-say("Готово: %d инструментов, %d строк, ряды доведены до %s.",
-    length(fetched), sum(vapply(fetched, nrow, integer(1))),
-    format(as.Date(last_date, origin = "1970-01-01"), "%d.%m.%Y"))
+say("Готово: %d инструментов, %d строк.", length(fetched),
+    sum(vapply(fetched, nrow, integer(1))))
+if (is.null(before) || is.na(before)) {
+  say("Ряды доведены до %s (хранилище заполнено впервые).", format(after, "%d.%m.%Y"))
+} else if (after > before) {
+  say("Ряды ПРОДВИНУЛИСЬ: %s -> %s.", format(before, "%d.%m.%Y"), format(after, "%d.%m.%Y"))
+} else {
+  # Не отказ: в выходные и праздники новой сессии нет. Но сказать об этом
+  # нужно прямо, иначе пустой прогон неотличим от рабочего.
+  say("Ряды НЕ продвинулись: как были %s, так и остались. Новой сессии у источника нет.",
+      format(before, "%d.%m.%Y"))
+}
 quit(status = 0L)
