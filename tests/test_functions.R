@@ -232,6 +232,25 @@ local({
      identical(md_last_price_date("GS"), as.Date("2026-09-10")))
   ok("глубина ограничивается аргументом days", nrow(md_candles("GS", days = 3)) == 3)
 
+  # ЗАГРУЗЧИК НЕ ДОЛЖЕН ЧИТАТЬ СОБСТВЕННОЕ ХРАНИЛИЩЕ. Пока хранилище
+  # проверялось первым безусловно, ночная загрузка после первого прогона стала
+  # пустышкой: она «получала» ряды из того же файла, который собиралась
+  # переписать, отчитывалась зелёным, и данные стояли на месте.
+  local({
+    real_get <- md_get
+    md_get <<- function(path, query = list()) {
+      list(t = as.numeric(as.POSIXct(c("2026-10-01", "2026-10-02"), tz = "UTC")),
+           o = c(1, 1), h = c(2, 2), l = c(0.5, 0.5), c = c(500, 501),
+           v = c(10, 10), s = "ok")
+    }
+    on.exit(assign("md_get", real_get, envir = .GlobalEnv), add = TRUE)
+    fresh <- md_candles("GS", days = 10, online = TRUE)
+    ok("online = TRUE идёт в источник, а не в хранилище",
+       nrow(fresh) == 2 && isTRUE(all.equal(max(fresh$close), 501)))
+    ok("а online = FALSE по-прежнему читает хранилище",
+       nrow(md_candles("GS", days = 10, online = FALSE)) == 10)
+  })
+
   # Откат должен быть копированием: повторно скачать нельзя, лимит конечен.
   store_rotate()
   vers <- list.dirs(file.path(BLNR_STORE_DIR, "versions"), recursive = FALSE)
@@ -499,13 +518,34 @@ local({
   # значит за период владения — (1.21/1.10 - 1) = 10%, а не 21%.
   ok("вход позже базы -> прогноз приводится к дате входа",
      isTRUE(all.equal(forecast_between(fc, "GS", as.Date("2026-09-18"), as.Date("2026-09-25")), 10)))
-  ok("вход раньше базы -> считаем от базы файла",
-     isTRUE(all.equal(forecast_between(fc, "GS", as.Date("2026-01-01"), as.Date("2026-09-25")), 21)))
+  # Бумага куплена ДО появления прогноза — сравнивать нечего. Подтягивать
+  # начало к базе файла нельзя: факт считался бы за весь срок владения, а
+  # модель — только с даты прогноза, и разность таких отрезков бессмысленна.
+  ok("вход раньше прогноза -> NA, а не подтяжка к базе",
+     is.na(forecast_between(fc, "GS", as.Date("2026-01-01"), as.Date("2026-09-25"))))
+  ok("вход ровно в базу прогноза считается",
+     isTRUE(all.equal(forecast_between(fc, "GS", as.Date("2026-09-11"), as.Date("2026-09-25")), 21)))
+  ok("причина названа: куплено до прогноза",
+     identical(forecast_gap_reason(fc, "GS", as.Date("2026-01-01"), as.Date("2026-09-25")),
+               "куплено до прогноза"))
+  ok("причина названа: куплено в этот день",
+     identical(forecast_gap_reason(fc, "GS", as.Date("2026-09-25"), as.Date("2026-09-25")),
+               "куплено в этот день"))
+  ok("причина названа: нет в модели",
+     identical(forecast_gap_reason(fc, "ZZZ", as.Date("2026-09-18"), as.Date("2026-09-25")),
+               "нет в модели"))
+  ok("сравнимая позиция причины не имеет",
+     is.null(forecast_gap_reason(fc, "GS", as.Date("2026-09-18"), as.Date("2026-09-25"))))
   # Нулевой срок владения: модель ничего не обещала, и 0% тут был бы враньём.
   ok("нулевой срок владения -> NA, а не 0%",
      is.na(forecast_between(fc, "GS", as.Date("2026-09-25"), as.Date("2026-09-25"))))
   ok("дата раньше начала файла -> NA",
      is.na(forecast_between(fc, "GS", as.Date("2026-01-01"), as.Date("2026-05-01"))))
+  # Тот самый перевёртыш: бумага, купленная ДО прогноза, не должна
+  # оказываться единственной «сравнимой», а купленная под прогноз — молчать.
+  ok("купленная под прогноз сравнивается, купленная до — нет",
+     is.finite(forecast_between(fc, "GS", as.Date("2026-09-18"), as.Date("2026-09-25"))) &&
+     is.na(forecast_between(fc, "GS", as.Date("2026-06-08"), as.Date("2026-09-25"))))
   ok("неизвестный тикер -> NA",
      is.na(forecast_between(fc, "ZZZ", as.Date("2026-09-18"), as.Date("2026-09-25"))))
 
@@ -520,6 +560,8 @@ local({
      isTRUE(all.equal(r[1, dev_since_entry_pp], 2)))
   ok("купленная с базы сравнивается с полным прогнозом",
      isTRUE(all.equal(r[2, forecast_since_entry_pct], 21)))
+  ok("причина отсутствия сравнения доезжает до метрик",
+     "model_gap" %in% names(r))
   # Ровно тот артефакт, ради которого всё затевалось.
   ok("сравнение от базы и за период владения дают РАЗНОЕ",
      r[1, dev_pct] != r[1, dev_since_entry_pp])

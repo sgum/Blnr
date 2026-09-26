@@ -147,8 +147,13 @@ build_portfolio_metrics <- function(as_of = Sys.Date(),
   dt[, day_change_pct        := (price_at / price_prev - 1) * 100]
   dt[, pnl                   := current_value - entry_value]
 
-  total_current <- sum(dt$current_value, na.rm = TRUE)
-  dt[, weight_pct := current_value / total_current * 100]
+  # Вес считается от ВСЕГО СЧЁТА, включая деньги: доля бумаги «28% портфеля»
+  # при половине счёта в кэше — неправда. Сумма весов бумаг плюс вес кэша
+  # даёт 100%.
+  cash_now <- ledger_cash_at(ledger, as_of)
+  account <- sum(dt$current_value, na.rm = TRUE) +
+             (if (is.finite(cash_now)) cash_now else 0)
+  dt[, weight_pct := current_value / account * 100]
 
   data.table::setattr(dt, "as_of", as_of)
   # Денежная часть счёта на ту же дату: итог портфеля — это бумаги ПЛЮС кэш,

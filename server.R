@@ -470,12 +470,21 @@ shinyServer(function(input, output, session) {
                        " — по открытым на эту дату позициям."))
     )
     if (!is.null(vf) && identical(vf$covered, 0L)) {
+      reasons <- portfolio_metrics()[quantity_at > 0, model_gap]
+      reasons <- reasons[!is.na(reasons)]
       tiles <- c(tiles, list(
         kpi("\u2014", "Лучше модели", tip_align = "r",
-            sub = sprintf("все %d позиций куплены сегодня", vf$total),
+            sub = if (length(reasons))
+                    paste(names(sort(table(reasons), decreasing = TRUE))[1],
+                          sprintf("(%d из %d)", max(table(reasons)), vf$total))
+                  else sprintf("нет сравнимых позиций из %d", vf$total),
             tip = paste0(
-              "Сравнивать не с чем: за нулевой срок владения модель ничего ",
-              "не обещала. Число появится со следующей торговой сессии."))
+              "Сравнивать не с чем. Бумага, купленная ДО появления прогноза, ",
+              "в сравнение не входит: её факт считался бы за весь срок ",
+              "владения, а модель — только с даты прогноза, и разность таких ",
+              "отрезков не значит ничего. Купленная сегодня не входит тоже — ",
+              "за нулевой срок модель ничего не обещала. Число появится со ",
+              "следующей торговой сессии по бумагам, купленным под прогноз."))
       ))
     } else if (!is.null(vf) && is_future()) {
       # В будущем факта нет и быть не может: сравнивать его с прогнозом на ту
@@ -543,6 +552,11 @@ shinyServer(function(input, output, session) {
             else format(sel_date(), "%d.%m.%Y"),
       tip = paste0(
         "Цены — закрытие выбранной торговой сессии из локального хранилища. ",
+        "«Вложено» — сколько стоила позиция на входе, «Стоимость» — сколько ",
+        "стоит сейчас. Наличные показаны отдельной строкой, а вес считается ",
+        "от всего счёта: доля бумаги «28% портфеля» при половине счёта в ",
+        "деньгах была бы неправдой. Два итога — по бумагам и по счёту ",
+        "целиком. ",
         "«От покупки» — результат позиции от цены входа. «Модель» — прогноз ",
         "за ТОТ ЖЕ период владения: накопленный прогноз приведён к дате ",
         "покупки, иначе бумага, купленная позже базы прогноза, присвоила бы ",
@@ -628,6 +642,7 @@ shinyServer(function(input, output, session) {
         tags$td(formatC(r$quantity_at, format = "d")),
         plain(r$entry_price), plain(r$current_price),
         num(r$day_change_pct, fmt_pct),
+        plain(r$entry_value, 0),
         plain(r$current_value, 0),
         # Вес — числом и заливкой ячейки: отдельная карточка «Структура
         # портфеля» ради тех же пяти чисел заняла бы полосу экрана.
@@ -637,7 +652,11 @@ shinyServer(function(input, output, session) {
             max(0, min(100, r$weight_pct))),
           formatC(r$weight_pct, format = "f", digits = 1), "%"),
         num(r$growth_pct, fmt_pct),
-        if (has_fc) num(r$forecast_since_entry_pct, fmt_pct),
+        if (has_fc) {
+          if (is.finite(r$forecast_since_entry_pct)) num(r$forecast_since_entry_pct, fmt_pct)
+          else tags$td(class = "mut", style = "font-size:10.5px",
+                       r$model_gap %||% "\u2014")
+        },
         if (has_fc) num(r$dev_since_entry_pp, fmt_pp),
         tags$td(class = "mut",
                 if (is.na(r$last_buy_date)) "\u2014"
@@ -672,24 +691,55 @@ shinyServer(function(input, output, session) {
       tags$thead(tags$tr(
         tags$th("Тикер"), tags$th("Кол-во"), tags$th("Вход"),
         tags$th("Цена"), tags$th("За сессию"),
-        tags$th("Стоимость"), tags$th("Вес"), tags$th("Результат"),
+        tags$th("Вложено"), tags$th("Стоимость"), tags$th("Вес"),
+        tags$th("Результат"),
         if (has_fc) tags$th("Ожидалось"),
         if (has_fc) tags$th("Лучше модели"),
         tags$th("Куплено"),
         tags$th("")
       )),
-      tags$tbody(rows),
-      tags$tfoot(tags$tr(
-        tags$td("Итого"), tags$td(), tags$td(), tags$td(),
-        tags$td(class = tone_of(s$day_pct), fmt_pct(s$day_pct)),
-        tags$td(fmt_money(s$current_value)), tags$td("100%"),
-        tags$td(class = tone_of(s$growth_pct), fmt_pct(s$growth_pct)),
-        if (has_fc) tags$td(class = if (is.null(vf$model_money)) "mut" else tone_of(vf$model_money),
-                            if (is.null(vf$model_money)) "\u2014" else fmt_signed_money(vf$model_money)),
-        if (has_fc) tags$td(class = if (is.null(vf$dev_money)) "mut" else tone_of(vf$dev_money),
-                            if (is.null(vf$dev_money)) "\u2014" else fmt_signed_money(vf$dev_money)),
-        tags$td(), tags$td()
-      ))
+      tags$tbody(
+        rows,
+        # Наличные — такая же часть счёта, как бумаги. Без этой строки рост
+        # портфеля читался только по бумагам, а половина счёта лежала в
+        # деньгах и в картине не участвовала вовсе.
+        if (is.finite(s$cash)) tags$tr(
+          class = "cash",
+          tags$td(class = "nm", "Наличные"),
+          tags$td(), tags$td(), tags$td(), tags$td(), tags$td(),
+          tags$td(fmt_money(s$cash)),
+          tags$td(sprintf("%.1f%%", s$cash / s$total_value * 100)),
+          tags$td(), if (has_fc) tags$td(), if (has_fc) tags$td(),
+          tags$td(), tags$td()
+        )
+      ),
+      # Два итога намеренно: по бумагам виден результат вложений, по счёту —
+      # сколько портфель стоит на самом деле.
+      tags$tfoot(
+        tags$tr(
+          tags$td("Бумаги"), tags$td(), tags$td(), tags$td(),
+          tags$td(class = tone_of(s$day_pct), fmt_pct(s$day_pct)),
+          tags$td(fmt_money(s$entry_value)),
+          tags$td(fmt_money(s$current_value)),
+          tags$td(sprintf("%.1f%%", s$current_value / s$total_value * 100)),
+          tags$td(class = tone_of(s$growth_pct), fmt_pct(s$growth_pct)),
+          if (has_fc) tags$td(class = if (is.null(vf$model_money)) "mut" else tone_of(vf$model_money),
+                              if (is.null(vf$model_money)) "\u2014" else fmt_signed_money(vf$model_money)),
+          if (has_fc) tags$td(class = if (is.null(vf$dev_money)) "mut" else tone_of(vf$dev_money),
+                              if (is.null(vf$dev_money)) "\u2014" else fmt_signed_money(vf$dev_money)),
+          tags$td(), tags$td()
+        ),
+        tags$tr(
+          class = "acct",
+          tags$td("Итого по счёту"), tags$td(), tags$td(), tags$td(), tags$td(),
+          tags$td(),
+          tags$td(fmt_money(s$total_value)),
+          tags$td("100%"),
+          tags$td(class = tone_of(s$pnl), fmt_signed_money(s$pnl)),
+          if (has_fc) tags$td(), if (has_fc) tags$td(),
+          tags$td(), tags$td()
+        )
+      )
     ))
   })
 

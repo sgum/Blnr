@@ -253,6 +253,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
 .rk tbody tr.sel{background:#ffefcc}
 .rk tfoot td{padding:5px 6px;font-weight:800;border-top:1px solid var(--border);
   background:var(--muted)}
+.rk tbody tr.cash td{background:#f8f9fb;color:var(--dim);font-weight:700}
+.rk tbody tr.cash:hover td{background:#f4f5f7}
+.rk tfoot tr.acct td{border-top:2px solid var(--orange)}
 .rk .nm{font-weight:800}
 
 /* --- компактные контролы Shiny ---------------------------------------- */

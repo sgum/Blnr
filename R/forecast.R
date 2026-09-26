@@ -152,6 +152,7 @@ add_forecast_to_metrics <- function(dt, forecast, as_of = Sys.Date()) {
     dt[, dev_pct := NA_real_]
     dt[, forecast_since_entry_pct := NA_real_]
     dt[, dev_since_entry_pp := NA_real_]
+    dt[, model_gap := "прогноз не загружен"]
     return(dt[])
   }
   dt[, forecast_pct := vapply(ticker, forecast_for_date, numeric(1), forecast = forecast, date = as_of)]
@@ -172,9 +173,17 @@ add_forecast_to_metrics <- function(dt, forecast, as_of = Sys.Date()) {
                                        as_of),
       ticker, get(anchor_col))]
     dt[, dev_since_entry_pp := growth_pct - forecast_since_entry_pct]
+    dt[, model_gap := mapply(
+      function(tk, d) {
+        r <- forecast_gap_reason(forecast, tk,
+                                 if (is.na(d)) as.Date(NA) else d, as_of)
+        if (is.null(r)) NA_character_ else r
+      },
+      ticker, get(anchor_col))]
   } else {
     dt[, forecast_since_entry_pct := NA_real_]
     dt[, dev_since_entry_pp := NA_real_]
+    dt[, model_gap := "неизвестна дата покупки"]
   }
   dt[]
 }
@@ -197,20 +206,40 @@ forecast_between <- function(forecast, tkr, from, to) {
   if (is.null(forecast) || nrow(forecast) == 0) return(NA_real_)
   sub <- forecast[ticker == tkr]
   if (nrow(sub) == 0) return(NA_real_)
-  # Начало отсчёта ограничиваем НАЧАЛОМ САМОГО ФАЙЛА, а не глобальной
-  # константой: у каждого модельного воркбука своя база, и константа делала
-  # вид, что знает чужую. Раньше прогноз, начинающийся в июне, обрезался
-  # сентябрьской константой и молча становился NA.
   base <- min(sub$date)
-  start <- max(as.Date(from), base, na.rm = TRUE)
+  start <- as.Date(from)
   target <- as.Date(to)
+  if (!is.finite(as.numeric(start)) || !is.finite(as.numeric(target))) return(NA_real_)
+
+  # Бумага куплена РАНЬШЕ, чем появился прогноз, — сравнивать нечего.
+  # Раньше начало периода подтягивалось к базе файла, и получалось сравнение
+  # разных отрезков: факт считался от цены входа (108 дней по IBM), а модель —
+  # от базы прогноза (13 дней). Разность таких величин не значит ничего.
+  # Заодно это переворачивало картину: единственной «сравнимой» оказывалась
+  # бумага, купленная ДО прогноза, а купленные под него молчали.
+  if (start < base) return(NA_real_)
+
   # Нулевой срок владения — модели нечего сказать. Возвращать 0% нельзя: ноль
   # читается как «модель обещала топтание на месте», хотя она не обещала
-  # ничего. Столбец, полный нулей, именно так и выглядел на экране.
-  if (!is.finite(as.numeric(start)) || start >= target) return(NA_real_)
+  # ничего.
+  if (start >= target) return(NA_real_)
+
   f1 <- forecast_for_date(forecast, tkr, target)
   if (is.na(f1)) return(NA_real_)
   f0 <- if (start <= base) 0 else forecast_for_date(forecast, tkr, start)
   if (is.na(f0)) f0 <- 0
   ((1 + f1 / 100) / (1 + f0 / 100) - 1) * 100
+}
+
+# Почему по бумаге нет сравнения с моделью. Возвращает NULL, если сравнение
+# возможно. Нужна, чтобы на экране стоял не безликий прочерк, а причина.
+forecast_gap_reason <- function(forecast, tkr, from, to) {
+  if (is.null(forecast) || nrow(forecast) == 0) return("прогноз не загружен")
+  sub <- forecast[ticker == tkr]
+  if (nrow(sub) == 0) return("нет в модели")
+  start <- as.Date(from); target <- as.Date(to)
+  if (is.na(start)) return("неизвестна дата покупки")
+  if (start < min(sub$date)) return("куплено до прогноза")
+  if (start >= target) return("куплено в этот день")
+  NULL
 }

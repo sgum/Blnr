@@ -160,11 +160,19 @@ md_online_allowed <- function() {
   identical(toupper(Sys.getenv("BLNR_ALLOW_ONLINE", unset = "false")), "TRUE")
 }
 
+# online = FALSE (стенд) — читаем ТОЛЬКО хранилище, в сеть не идём.
+# online = TRUE  (загрузчик) — идём ТОЛЬКО в API, хранилище игнорируем.
+#
+# Раньше хранилище проверялось первым безусловно, и загрузчик читал сам себя:
+# после первого успешного прогона ночная загрузка стала пустышкой, при этом
+# отчитывалась зелёным и проходила проверку свежести (отставание в один день
+# штатно для выходных). Ряды стояли на месте с 25.09 по 26.09.2026, пока это
+# не поймал владелец, заметив «0 дн» у позиции, купленной два дня назад.
 md_candles <- function(ticker, days = WATCHLIST_RETRO_DAYS,
                        online = md_online_allowed()) {
-  st <- store_read_candles(ticker)
-  if (nrow(st) > 0) return(utils::tail(st, days))
-  if (!online) {
+  if (!isTRUE(online)) {
+    st <- store_read_candles(ticker)
+    if (nrow(st) > 0) return(utils::tail(st, days))
     md_note_error(list(error = "marketdata_store_empty"))
     return(empty_candles())
   }
