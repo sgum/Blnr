@@ -809,6 +809,30 @@ local({
      identical(watchlist_all()[ticker == "ZZTOP", source], "added") &&
      isTRUE(watchlist_remove("ZZTOP")$ok))
 
+  # --- классы акций: слэш в тикере ------------------------------------------
+  # Exante пишет классы через слэш (BRK/A), а слэш в тикере — разделитель
+  # пути: ряд ушёл бы в candles/BRK/A.csv, в несуществующий подкаталог.
+  ok("слэш в тикере приводится к точке", identical(ticker_norm("BRK/A"), "BRK.A"))
+  ok("обратный слэш тоже", identical(ticker_norm("BRK\\A"), "BRK.A"))
+  ok("обычный тикер не портится", identical(ticker_norm(" brk.b "), "BRK.B"))
+  ok("бумага со слэшем добавляется под точечным тикером",
+     isTRUE(watchlist_add("BRK/A", "Berkshire A", probe = FALSE)$ok) &&
+     "BRK.A" %in% watchlist_active()$ticker &&
+     !("BRK/A" %in% watchlist_all()$ticker))
+  ok("повторное добавление через слэш дубля не даёт",
+     !isTRUE(watchlist_add("BRK/A", probe = FALSE)$ok))
+  ok("и выключается по любому написанию",
+     isTRUE(watchlist_set_active("BRK/A", FALSE)$ok) &&
+     !("BRK.A" %in% watchlist_active()$ticker))
+  watchlist_remove("BRK.A")
+
+  # Хранилище отказывается писать мимо себя громко, а не молча.
+  ok("тикер с разделителем пути в хранилище отвергается",
+     inherits(try(store_candles_path("BRK/A"), silent = TRUE), "try-error") &&
+     inherits(try(store_candles_path("../x"), silent = TRUE), "try-error"))
+  ok("нормальный тикер путь получает",
+     grepl("BRK\\.A\\.csv$", store_candles_path("BRK.A")))
+
   # NA в флаге — «состояние неизвестно», а не «выключено»: один битый CSV не
   # должен молча снимать бумагу с мониторинга.
   ok("NA в флаге наблюдения = под наблюдением",

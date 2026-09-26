@@ -25,7 +25,16 @@ BLNR_STORE_DAYS <- as.integer(Sys.getenv("BLNR_STORE_DAYS", unset = "400"))
 
 store_candles_dir <- function() file.path(BLNR_STORE_DIR, "candles")
 store_candles_path <- function(ticker) {
-  file.path(store_candles_dir(), paste0(toupper(trimws(ticker)), ".csv"))
+  tk <- toupper(trimws(as.character(ticker)[1]))
+  # Тикер идёт в ИМЯ ФАЙЛА, поэтому разделитель пути в нём — это запись мимо
+  # хранилища: ряд BRK/A ушёл бы в candles/BRK/A.csv, в несуществующий
+  # подкаталог. Exante пишет классы акций именно через слэш, так что вход
+  # такого вида реален. Отказ громкий: молча подменить имя значило бы завести
+  # второй ряд той же бумаги под другим тикером.
+  if (grepl("[/\\\\]|\\.\\.", tk) || !nzchar(tk)) {
+    stop(sprintf("недопустимый тикер для имени файла: '%s' (см. ticker_norm)", tk))
+  }
+  file.path(store_candles_dir(), paste0(tk, ".csv"))
 }
 store_meta_path <- function() file.path(BLNR_STORE_DIR, "meta.json")
 

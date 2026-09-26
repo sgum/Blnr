@@ -115,7 +115,7 @@ is_watched <- function(x) is.na(x) | as.logical(x)
 # СЕЙЧАС в портфеле, нельзя: без её ряда история и стоимость портфеля считались
 # бы по дыре, и падение цены выглядело бы как «нет данных».
 watchlist_set_active <- function(ticker, on, held = character()) {
-  tk <- toupper(trimws(as.character(ticker)))
+  tk <- ticker_norm(ticker)
   cur <- watchlist_all()
   i <- match(tk, toupper(cur$ticker))
   if (is.na(i)) return(list(ok = FALSE, message = paste0(tk, " в реестре не значится.")))
@@ -140,7 +140,7 @@ watchlist_set_active <- function(ticker, on, held = character()) {
 # тикером, которого нет у второго, ронял бы ночную загрузку каждую ночь
 # (она принципиально «всё или ничего»). Возвращает list(ok, message).
 watchlist_add <- function(ticker, name_ru = NULL, probe = TRUE) {
-  tk <- toupper(trimws(as.character(ticker)))
+  tk <- ticker_norm(ticker)
   if (!nzchar(tk) || !grepl("^[A-Z0-9.-]{1,12}$", tk)) {
     return(list(ok = FALSE, message = "Тикер должен быть из латиницы, цифр, точки или дефиса."))
   }
@@ -171,12 +171,24 @@ watchlist_add <- function(ticker, name_ru = NULL, probe = TRUE) {
   list(ok = TRUE, message = paste0(tk, " добавлен в наблюдение. Ряд цен появится после ночной загрузки."))
 }
 
+# Приведение тикера к виду, в котором он годится и источнику цен, и ИМЕНИ
+# ФАЙЛА. Классы акций Exante пишет через слэш (BRK/A, BF/B — 28 бумаг из
+# 11758), а слэш в тикере — это разделитель пути: ряд такой бумаги ушёл бы в
+# candles/BRK/A.csv, то есть в несуществующий подкаталог, и запись упала бы
+# уже ночью. marketdata.app считает BRK.B, BRK/B и BRK-B ОДНОЙ бумагой
+# (проверено 26.09.2026 сравнением цен: все три дают 505.18, а BRK.A — 759200,
+# то есть источник действительно различает классы, а разделитель — нет).
+# Поэтому приводим к точке: она безопасна в имени файла.
+ticker_norm <- function(ticker) {
+  gsub("[/\\\\]", ".", toupper(trimws(as.character(ticker)[1])))
+}
+
 # Удалить инструмент из реестра НАСОВСЕМ. Только для добавленных вручную:
 # исходный состав из рабочей таблицы удалять нельзя, его выключают.
 # Ряд цен в хранилище не трогаем: он нужен истории портфеля, если бумага
 # когда-то покупалась.
 watchlist_remove <- function(ticker) {
-  tk <- toupper(trimws(as.character(ticker)))
+  tk <- ticker_norm(ticker)
   cur <- watchlist_all()
   i <- match(tk, toupper(cur$ticker))
   if (is.na(i)) {
