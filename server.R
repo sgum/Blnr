@@ -1029,11 +1029,13 @@ shinyServer(function(input, output, session) {
                    class = if (identical(right_tab(), "registry")) "on" else NULL)
     )
     if (identical(right_tab(), "registry")) {
-      wl <- watchlist_all()
-      on_n <- sum(is_watched(wl$active))
       return(panel(
         "Наблюдение и справочник",
-        sub = sprintf("под наблюдением %d из %d", on_n, nrow(wl)),
+        # Счётчик — ОТДЕЛЬНЫЙ реактивный вывод, а не строка в шапке карточки.
+        # Шапка рисуется один раз на открытие вкладки, и статичный текст
+        # продолжал утверждать «24 из 24» над таблицей, где бумага уже
+        # помечена выключенной: виджет говорил одно, числа под ним другое.
+        sub = textOutput("wl_count", inline = TRUE),
         tip = paste0(
           "Верхнее поле — поиск по ГЛОБАЛЬНОМУ справочнику: все бумаги, ",
           "доступные счёту (биржевые списки Exante, обновляются отдельным ",
@@ -1103,6 +1105,12 @@ shinyServer(function(input, output, session) {
                 width = "100%"),
       uiOutput("wl_hits")
     )
+  })
+
+  output$wl_count <- renderText({
+    wl_bump()
+    wl <- watchlist_all()
+    sprintf("под наблюдением %d из %d", sum(is_watched(wl$active)), nrow(wl))
   })
 
   # Результаты поиска. Справочник лежит в хранилище, поиск идёт по нему —
