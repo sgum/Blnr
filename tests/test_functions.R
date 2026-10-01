@@ -718,11 +718,21 @@ local({
      !is.null(st$checked_at) &&
      identical(format(st$checked_at, "%Y-%m-%d"), "2026-09-30"))
 
+  # Время в meta.json лежит со смещением. as.POSIXct без format разбирает
+  # такую строку НАПОЛОВИНУ: дата есть, часы обнулены — «спрошен 01.10 05:53»
+  # превращалось в «01.10 00:00», и ошибкой это не выглядело.
+  ok("время записи не теряет часы",
+     identical(format(st$updated_at, "%H:%M"), "07:33"))
+  ok("и показывается в МСК",
+     identical(format(st$updated_at, "%d.%m %H:%M"), "30.09 07:33"))
+
   store_note_check(source_last_date = as.Date("2026-09-29"),
                    at = as.POSIXct("2026-10-01 07:05:00", tz = "UTC"))
   st2 <- store_status()
   ok("отметка проверки записана",
      identical(format(st2$checked_at, "%Y-%m-%d"), "2026-10-01"))
+  ok("с часами, а не обнулённая",
+     identical(format(st2$checked_at, "%H:%M"), "10:05"))
   ok("а дата ЗАПИСИ при этом не поехала",
      identical(format(st2$updated_at, "%Y-%m-%d"), "2026-09-30"))
   ok("ряды остались прежними", identical(st2$last_date, as.Date("2026-09-29")))

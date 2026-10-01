@@ -129,7 +129,17 @@ store_note_check <- function(source_last_date = NULL, at = Sys.time()) {
 store_status <- function() {
   meta <- store_read_meta()
   tks <- store_tickers()
-  as_time <- function(x) if (!is.null(x)) as.POSIXct(x, tz = "UTC") else NULL
+  # Время в meta.json лежит с часовым смещением ("2026-10-01T05:53:03+0300").
+  # as.POSIXct БЕЗ format такую строку разбирает молча и наполовину: берёт
+  # только дату, а часы обнуляет — подпись «источник спрошен 01.10 05:53»
+  # превращалась в «01.10 00:00», и это не выглядело ошибкой. Поэтому формат
+  # задаётся явно, а показываем в МСК: стенд читают в Москве.
+  as_time <- function(x) {
+    if (is.null(x) || !is.character(x) || !nzchar(x)) return(NULL)
+    v <- as.POSIXct(x, format = "%Y-%m-%dT%H:%M:%S%z", tz = "Europe/Moscow")
+    if (is.na(v)) v <- as.POSIXct(x, tz = "Europe/Moscow")
+    if (is.na(v)) NULL else v
+  }
   list(
     updated_at  = as_time(meta$updated_at),
     checked_at  = as_time(meta$checked_at %||% meta$updated_at),
