@@ -195,6 +195,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
   font-weight:700;font-size:10.5px;padding:3px 9px;border-radius:5px;
   cursor:pointer}
 
+/* Приписка в чипе котировок: когда источник спрашивали в последний раз.
+   Мельче и бледнее самой даты — это уточнение, а не второе число. */
+.bdg .q{color:var(--faint);font-weight:600;margin-left:5px;font-size:10.5px}
+
 /* --- виджет «Факт против модели»: чипы тикеров --- */
 .vs{display:flex;flex-direction:column;min-height:0;height:100%}
 .vs-plot{flex:1 1 auto;min-height:0;padding:2px}
@@ -438,7 +442,17 @@ dashboardUI <- function() {
           class = "seg",
           downloadButton("export_xlsx", "1 · Ряды в Excel", class = "dl"),
           actionButton("open_forecast", "2 · Прогноз\u2026"),
-          actionButton("portfolio_refresh", "Обновить")
+          # Кнопка перетягивает СОСТАВ СЧЁТА у брокера и перечитывает
+          # хранилище рядов. Котировок она не приносит: их тянет ночное
+          # задание, а стенд в marketdata.app не ходит (лимит 100 запросов в
+          # сутки). Без этой оговорки кнопка обещает больше, чем делает —
+          # владелец нажал её, ожидая свежую сессию, и не получил.
+          actionButton("portfolio_refresh", "Обновить", title = paste0(
+            "Перетягивает состав счёта и денежный остаток у брокера и ",
+            "перечитывает хранилище рядов. Котировки приходят отдельно, ",
+            "заданием Jenkins (07:00, 09:00 и 11:00 МСК): источник публикует ",
+            "дневную свечу через 8–9 часов после закрытия биржи, и из ",
+            "браузера её не вытянуть."))
         ),
         uiOutput("logout_ui", inline = TRUE)
       ),

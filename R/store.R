@@ -17,6 +17,9 @@
 # деплоя делает `git clean -fdx`, и всё, что внутри репозитория, стирается при
 # каждой выкатке (так уже сгорели кэш котировок и лог снимков, 25.09.2026).
 
+# Нулевое слияние нужно и загрузчикам, которые exante_api.R не подключают.
+if (!exists("%||%")) `%||%` <- function(a, b) if (is.null(a) || length(a) == 0) b else a
+
 BLNR_STORE_DIR <- Sys.getenv("BLNR_STORE_DIR", unset = file.path("data", "store"))
 
 # Глубина ряда, которую держим в хранилище. Больше, чем показывает экран:
@@ -102,15 +105,37 @@ store_write_meta <- function(meta) {
   invisible(TRUE)
 }
 
+# Отметка «источник спрошен, нового нет». Пишется загрузчиком, когда разведка
+# показала, что свежей сессии у источника ещё не появилось.
+#
+# Зачем отдельно от updated_at. «Ряды на 29.09» и «ряды на 29.09, потому что
+# 30.09 у источника ещё нет» — разные сообщения, и второе снимает вопрос
+# «почему на экране не вчерашний торговый день». Без него на стенде видно
+# только дату записи, то есть когда данные легли, но не когда их последний раз
+# СПРАШИВАЛИ.
+store_note_check <- function(source_last_date = NULL, at = Sys.time()) {
+  meta <- store_read_meta()
+  if (is.null(meta)) meta <- list()
+  meta$checked_at <- format(at, "%Y-%m-%dT%H:%M:%S%z")
+  if (!is.null(source_last_date) && !is.na(source_last_date)) {
+    meta$source_last_date <- format(as.Date(source_last_date))
+  }
+  store_write_meta(meta)
+}
+
 # Состояние хранилища для интерфейса: когда обновлялось, сколько инструментов,
-# до какой даты доведены ряды. NULL-поля означают «загрузка ещё не отработала».
+# до какой даты доведены ряды, когда последний раз спрашивали источник.
+# NULL-поля означают «загрузка ещё не отработала».
 store_status <- function() {
   meta <- store_read_meta()
   tks <- store_tickers()
+  as_time <- function(x) if (!is.null(x)) as.POSIXct(x, tz = "UTC") else NULL
   list(
-    updated_at  = if (!is.null(meta$updated_at)) as.POSIXct(meta$updated_at, tz = "UTC") else NULL,
+    updated_at  = as_time(meta$updated_at),
+    checked_at  = as_time(meta$checked_at %||% meta$updated_at),
     instruments = length(tks),
     last_date   = if (!is.null(meta$last_date)) as.Date(meta$last_date) else NULL,
+    source_last_date = if (!is.null(meta$source_last_date)) as.Date(meta$source_last_date) else NULL,
     ok          = length(tks) > 0
   )
 }
