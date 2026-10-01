@@ -34,7 +34,8 @@ portfolio_holdings <- data.table(
 
 source("R/snapshots.R"); source("R/watchlist.R"); source("R/store.R")
 source("R/marketdata.R")
-source("R/exante_api.R"); source("R/catalog.R"); source("R/ledger.R")
+source("R/exante_api.R"); source("R/catalog.R"); source("R/exante_candles.R")
+source("R/ledger.R")
 source("R/portfolio.R"); source("R/forecast.R")
 source("R/forecast_store.R")
 source("R/auth_ad.R"); source("R/auth_session.R")
@@ -748,7 +749,131 @@ local({
      identical(as.integer(meta$rows), 5L))
 })
 
-cat("== 14. Наблюдение: выключить, а НЕ удалить ==\n")
+cat("== 14. Свечи Exante: источник котировок ==\n")
+# С 01.10.2026 ряды тянутся у брокера, а не у marketdata.app: там на
+# бесплатном тарифе заявлена СУТОЧНАЯ задержка, и утром на стенде лежала
+# позапрошлая сессия. Разбор — docs/dev.md.
+local({
+  tmpstore <- file.path(tempdir(), paste0("exc_", as.integer(runif(1, 1e6, 9e6))))
+  old_dir <- BLNR_STORE_DIR; BLNR_STORE_DIR <<- tmpstore
+  on.exit({ BLNR_STORE_DIR <<- old_dir; unlink(tmpstore, recursive = TRUE) }, add = TRUE)
+
+  # --- незавершённые сутки не должны попадать в хранилище -------------------
+  # Метку дневной свечи Exante ставит ПОЛНОЧЬЮ UTC, и свеча идёт до 24:00 UTC
+  # (замерено 01.10.2026 на AMD). Пока сутки не кончились, close — это
+  # промежуточная цена, а не итог дня.
+  mid_day <- as.POSIXct("2026-10-01 18:40:00", tz = "UTC")   # сессия идёт
+  after   <- as.POSIXct("2026-10-02 03:10:00", tz = "UTC")   # сутки закрылись
+  ok("пока сутки UTC идут, свеча не принимается",
+     !exante_day_complete(as.Date("2026-10-01"), now = mid_day))
+  ok("после полуночи UTC — принимается",
+     exante_day_complete(as.Date("2026-10-01"), now = after))
+  ok("вчерашняя принимается всегда",
+     exante_day_complete(as.Date("2026-09-30"), now = mid_day))
+  ok("завтрашняя не принимается никогда",
+     !exante_day_complete(as.Date("2026-10-02"), now = after))
+
+  # --- разбор ответа --------------------------------------------------------
+  # Фикстура повторяет РЕАЛЬНЫЙ формат: полночь UTC, не биржевая полночь.
+  # Прежняя фикстура кодировала моё предположение, а не ответ источника, и
+  # поэтому не ловила сдвиг даты на сутки.
+  mk <- function(dates, closes) lapply(seq_along(dates), function(i) list(
+    timestamp = as.numeric(as.POSIXct(paste(dates[i], "00:00:00"), tz = "UTC")) * 1000,
+    open = closes[i] - 1, high = closes[i] + 2, low = closes[i] - 3,
+    close = closes[i]))
+  resp <- mk(c("2026-09-29", "2026-09-30", "2026-10-01"), c(100, 101, 102))
+
+  with_stub <- function(res, now, days = 400L) {
+    old <- exante_get_retry
+    exante_get_retry <<- function(...) res
+    on.exit(exante_get_retry <<- old, add = TRUE)
+    exante_candles("AAPL.NASDAQ", days = days, now = now, sleep_fn = function(...) NULL)
+  }
+
+  c_mid <- with_stub(resp, mid_day)
+  ok("незавершённые сутки отброшены",
+     nrow(c_mid) == 2L && max(c_mid$date) == as.Date("2026-09-30"))
+  c_after <- with_stub(resp, after)
+  ok("после полуночи UTC свеча принимается",
+     nrow(c_after) == 3L && max(c_after$date) == as.Date("2026-10-01"))
+
+  # Дата = СУТКИ UTC метки. Перевод в биржевую зону сдвинул бы весь ряд на
+  # день назад — и стенд считал бы прибыль по ценам предыдущей сессии.
+  ok("дата свечи равна суткам UTC её метки",
+     identical(sort(c_after$date),
+               as.Date(c("2026-09-29", "2026-09-30", "2026-10-01"))))
+  ok("цены разложены по колонкам",
+     isTRUE(all.equal(c_after[date == as.Date("2026-09-30"), close], 101)) &&
+     isTRUE(all.equal(c_after[date == as.Date("2026-09-30"), low], 98)))
+  ok("ряд отсортирован по дате", !is.unsorted(c_after$date))
+
+  # Объёма Exante не отдаёт. Колонка обязана остаться и быть NA: пропажа
+  # колонки сломает хранилище и выгрузку, а ноль был бы ложью про торги.
+  ok("колонка объёма есть и пуста",
+     "volume" %in% names(c_after) && all(is.na(c_after$volume)))
+
+  # Отказ источника — пустая таблица, а не падение и не нули.
+  ok("ошибка источника -> пустой ряд",
+     nrow(with_stub(list(error = "exante_http_error", status = 500), after)) == 0)
+  ok("пустой ответ -> пустой ряд", nrow(with_stub(list(), after)) == 0)
+
+  # --- повтор на ограничение частоты ---------------------------------------
+  # Пауза на угад не работает: замер 01.10.2026 показал 429 даже при паузе в
+  # 20 секунд. Работает повтор.
+  local({
+    calls <- 0L; slept <- numeric()
+    old <- exante_get
+    exante_get <<- function(...) {
+      calls <<- calls + 1L
+      if (calls < 3L) list(error = "exante_http_error", status = 429) else list(ok = TRUE)
+    }
+    on.exit(exante_get <<- old, add = TRUE)
+    res <- exante_get_retry("/x", sleep_fn = function(s) slept <<- c(slept, s))
+    ok("429 повторяется, а не считается отказом", isTRUE(res$ok) && calls == 3L)
+    ok("задержка между попытками растёт",
+       length(slept) == 2L && slept[2] > slept[1])
+  })
+  local({
+    old <- exante_get
+    exante_get <<- function(...) list(error = "exante_http_error", status = 429)
+    on.exit(exante_get <<- old, add = TRUE)
+    res <- exante_get_retry("/x", retries = 3L, sleep_fn = function(...) NULL)
+    ok("бесконечно не повторяем", identical(res$error, "exante_rate_limited"))
+  })
+  local({
+    calls <- 0L
+    old <- exante_get
+    exante_get <<- function(...) { calls <<- calls + 1L; list(error = "exante_http_error", status = 500) }
+    on.exit(exante_get <<- old, add = TRUE)
+    exante_get_retry("/x", sleep_fn = function(...) NULL)
+    ok("ошибка НЕ 429 повторами не лечится", calls == 1L)
+  })
+
+  # --- разрешение тикера в symbolId ----------------------------------------
+  # Суффикс биржи угадывать нельзя: GS.NYSE и GS.NASDAQ — разные инструменты.
+  store_write_catalog(data.table(
+    ticker    = c("QQQ", "GS", "GS"),
+    symbol_id = c("QQQ.NASDAQ", "GS.NYSE", "GS.NASDAQ"),
+    name      = c("Invesco QQQ", "Goldman Sachs", "Goldman Sachs"),
+    exchange  = c("NASDAQ", "NYSE", "NASDAQ"),
+    currency  = "USD", country = "US"))
+  ok("тикер из справочника разрешается",
+     identical(exante_symbol_from_catalog("QQQ"), "QQQ.NASDAQ"))
+  ok("при нескольких биржах выбирается основная",
+     identical(exante_symbol_from_catalog("GS"), "GS.NASDAQ"))
+  ok("неизвестный тикер -> NA", is.na(exante_symbol_from_catalog("ZZZZ")))
+
+  # Счёт и история точнее справочника: там биржа известна по факту сделки.
+  led <- data.table(id = 1L, value_date = as.Date("2026-09-14"), type = "TRADE",
+                    symbol = "GS.NYSE", asset = "GS.NYSE", amount = 1,
+                    price = 900, order_id = "o1")
+  ok("биржа из истории операций важнее справочника",
+     identical(exante_resolve_symbol("GS", ledger = led), "GS.NYSE"))
+  ok("без истории берётся справочник",
+     identical(exante_resolve_symbol("QQQ"), "QQQ.NASDAQ"))
+})
+
+cat("== 15. Наблюдение: выключить, а НЕ удалить ==\n")
 # Два разных действия, которые раньше были одним. Бумага из рабочей таблицы —
 # часть исходного состава: по ней есть строка прогнозной модели и, возможно,
 # история сделок, поэтому её можно только выключить из мониторинга. Удалять
@@ -891,7 +1016,7 @@ local({
      all(is_watched(c(TRUE, NA))) && !is_watched(FALSE))
 })
 
-cat("== 15. Глобальный справочник инструментов ==\n")
+cat("== 16. Глобальный справочник инструментов ==\n")
 # Справочник отвечает на «что вообще можно взять на счёт» ДО добавления.
 # Раньше тикер набирался руками, и опечатка садилась в реестр, а ронять ночную
 # загрузку начинала следующей ночью.
@@ -974,7 +1099,7 @@ local({
                                                collapse = "\n")))
 })
 
-cat("== 16. Поручения: по умолчанию НИЧЕГО не отправляется ==\n")
+cat("== 17. Поручения: по умолчанию НИЧЕГО не отправляется ==\n")
 # Стенд распоряжается реальными деньгами, поэтому отправка отделена от сборки
 # запроса. exante_place_order() без apply = TRUE обязана быть безвредной: она
 # возвращает тело запроса и не делает ни одного сетевого вызова.
@@ -1031,7 +1156,7 @@ local({
      identical(o$status[2], "отказ"))
 })
 
-cat("== 17. Результат против модели — в деньгах ==\n")
+cat("== 18. Результат против модели — в деньгах ==\n")
 # В процентах это была доходность ВЛОЖЕННОГО В БУМАГИ: одна акция за $285,
 # упавшая на 20%, рисовала «портфель −20%», хотя на счёте лежали ещё десятки
 # тысяч наличными. В деньгах подменить смысл нечем.
@@ -1070,7 +1195,7 @@ local({
      !any(c("fact_pct", "model_pct", "dev_pp") %in% names(d)))
 })
 
-cat("== 18. Динамика расхождения по каждой бумаге ==\n")
+cat("== 19. Динамика расхождения по каждой бумаге ==\n")
 # Столбики «на дату» отвечают, насколько модель ошиблась к сегодняшнему дню,
 # но не отвечают, ошибалась ли она так всегда. Бумага, три недели шедшая по
 # модели и обвалившаяся вчера, и бумага, разошедшаяся с первого дня, дают
@@ -1250,7 +1375,7 @@ local({
      isTRUE(all.equal(d4[date == last & ticker == "AAA", fact_pct], -20)))
 })
 
-cat("== 19. Хранилище экселей с прогнозом ==\n")
+cat("== 20. Хранилище экселей с прогнозом ==\n")
 # Прежде путь к прогнозу указывал на ОДИН файл: новый расчёт ложился поверх
 # старого, прежняя версия исчезала, а файл, поданный с экрана, жил до конца
 # сессии Shiny — то есть пропадал у всех при первой же выкатке.
@@ -1347,7 +1472,7 @@ local({
   ok("и в реестр не попадает", nrow(forecast_registry()) == 1L)
 })
 
-cat("== 20. Выгрузка в типовом формате мониторинга ==\n")
+cat("== 21. Выгрузка в типовом формате мониторинга ==\n")
 # Формат разобран по эталону владельца («OptionActual <дата>.xlsx»). Проверка
 # держит его строение: если лист «Реестр» переедет или у листа инструмента
 # сдвинется блок данных, файл перестанет открываться рабочими формулами —
@@ -1408,7 +1533,7 @@ local({
      any(grepl("нет данных", as.character(unlist(reg2)))))
 })
 
-cat("== 21. Сборка интерфейса ==\n")
+cat("== 22. Сборка интерфейса ==\n")
 # Гейт против класса дефектов «экран не собрался», который до выкладки ничем
 # не виден: перекрытые имена функций (jsonlite::validate поверх shiny::validate,
 # httr::config поверх plotly::config), пакет, нужный при СБОРКЕ UI, но

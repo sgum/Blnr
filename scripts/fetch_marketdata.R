@@ -1,10 +1,14 @@
 #!/usr/bin/env Rscript
 # scripts/fetch_marketdata.R
 #
-# Ночная загрузка дневных рядов по всему реестру наблюдения в локальное
-# хранилище (R/store.R). ЕДИНСТВЕННОЕ место в проекте, которое обращается к
-# marketdata.app: у аккаунта лимит 100 запросов в сутки, и стенд, ходящий в API
-# на каждом открытии экрана, выжигает его с первого пользователя.
+# Загрузка дневных рядов по всему реестру наблюдения в локальное хранилище
+# (R/store.R). ЕДИНСТВЕННОЕ место в проекте, которое ходит за котировками:
+# стенд читает только хранилище и в сеть не выходит вовсе.
+#
+# Источник выбирается переменной BLNR_QUOTES_SOURCE: "exante" (по умолчанию
+# с 01.10.2026) или "marketdata". Причина перехода — у бесплатного тарифа
+# marketdata.app заявлена суточная задержка данных, и утром на стенде лежала
+# позапрошлая сессия.
 #
 # Запускается заданием Jenkins (jenkins/Jenkinsfile_marketdata), а не cron и не
 # руками: нужна история прогонов и ответ на вопрос «когда это последний раз
@@ -36,6 +40,14 @@ Sys.setenv(BLNR_ALLOW_ONLINE = "TRUE")
 SNAPSHOT_LOG_PATH <- Sys.getenv("BLNR_SNAPSHOT_LOG",
                                 unset = file.path("data", "portfolio_snapshots.csv"))
 source("R/watchlist.R"); source("R/store.R"); source("R/marketdata.R")
+source("R/exante_api.R"); source("R/exante_candles.R")
+
+# ИСТОЧНИК КОТИРОВОК. С 01.10.2026 — Exante: на бесплатном тарифе
+# marketdata.app заявлена суточная задержка («24h Delayed Stock Data»), и
+# свеча за вчерашнюю сессию появлялась только в середине следующего дня.
+# Переключатель оставлен, чтобы вернуться одной переменной окружения, не
+# выкатывая код: прежний источник исправен, он просто медленный.
+QUOTES_SOURCE <- tolower(Sys.getenv("BLNR_QUOTES_SOURCE", unset = "exante"))
 
 `%||%` <- function(a, b) if (is.null(a) || length(a) == 0) b else a
 
@@ -48,12 +60,48 @@ MAX_STALE_DAYS <- as.integer(Sys.getenv("BLNR_STORE_MAX_STALE", unset = "5"))
 
 say <- function(...) cat(sprintf(...), "\n", sep = "")
 
-if (!md_has_token()) {
+if (identical(QUOTES_SOURCE, "exante")) {
+  if (!exante_has_credentials()) {
+    say("ОТКАЗ: нет кред Exante — источник недоступен, ряды не тронуты.")
+    quit(status = 1L)
+  }
+} else if (!md_has_token()) {
   say("ОТКАЗ: не задан MARKETDATA_TOKEN — источник недоступен, ряды не тронуты.")
   quit(status = 1L)
 }
+say("Источник котировок: %s", QUOTES_SOURCE)
 
 wl <- watchlist_active()
+
+# Разрешение тикеров в symbolId делается ОДИН раз до прохода: биржу угадывать
+# нельзя ("GS.NYSE" и "GS.NASDAQ" — разные инструменты), а справочник и
+# реестр операций читаются с диска, не из сети.
+SYMBOLS <- list()
+if (identical(QUOTES_SOURCE, "exante")) {
+  led_for_symbols <- tryCatch(store_read_ledger(), error = function(e) NULL)
+  for (tk in wl$ticker) {
+    SYMBOLS[[tk]] <- exante_resolve_symbol(tk, ledger = led_for_symbols)
+  }
+  unresolved <- names(SYMBOLS)[vapply(SYMBOLS, function(x) is.na(x) || !nzchar(x), logical(1))]
+  if (length(unresolved) > 0) {
+    say("ОТКАЗ: не удалось определить symbolId для %d бумаг: %s.",
+        length(unresolved), paste(unresolved, collapse = ", "))
+    say("Биржу угадывать нельзя. Обновите справочник заданием «311.blnr - catalog».")
+    quit(status = 1L)
+  }
+}
+
+# Единая точка получения ряда: загрузчик дальше не знает, какой источник
+# настроен, и логика «всё или ничего» остаётся общей.
+fetch_one <- function(tk, days) {
+  if (identical(QUOTES_SOURCE, "exante")) {
+    return(exante_candles(SYMBOLS[[tk]], days = days))
+  }
+  md_candles(tk, days = days, online = TRUE)
+}
+fetch_error <- function() {
+  if (identical(QUOTES_SOURCE, "exante")) "источник не отдал ряд" else md_status_text()
+}
 say("Реестр наблюдения: %d инструментов, глубина %d дней.", nrow(wl), BLNR_STORE_DAYS)
 # Что было ДО прогона — чтобы пустая загрузка была видна в логе строкой, а не
 # вычислялась сравнением двух сборок. Именно так пряталась пустышка: прогон
@@ -79,10 +127,10 @@ say("Хранилище: %s", normalizePath(BLNR_STORE_DIR, mustWork = FALSE))
 # идём за всеми. Нормальный день: 24 запроса на загрузку плюс по одному на
 # каждый лишний заход.
 probe_tk <- wl$ticker[1]
-probe <- md_candles(probe_tk, days = 5, online = TRUE)
+probe <- fetch_one(probe_tk, days = 5)
 if (nrow(probe) == 0) {
   say("ОТКАЗ: разведка по %s не удалась: %s", probe_tk,
-      md_status_text() %||% "нет данных")
+      fetch_error() %||% "нет данных")
   say("Хранилище оставлено в прежнем состоянии — прошлые ряды целы.")
   quit(status = 1L)
 }
@@ -113,10 +161,10 @@ for (i in seq_len(nrow(wl))) {
   tk <- wl$ticker[i]
   # online = TRUE явно: нам нужен именно поход в API, а не чтение хранилища,
   # иначе загрузчик читал бы сам себя и ряды никогда бы не обновлялись.
-  cnd <- md_candles(tk, days = BLNR_STORE_DAYS, online = TRUE)
+  cnd <- fetch_one(tk, days = BLNR_STORE_DAYS)
   if (nrow(cnd) == 0) {
     failed <- c(failed, tk)
-    say("  %-5s ОТКАЗ: %s", tk, md_status_text() %||% "нет данных")
+    say("  %-5s ОТКАЗ: %s", tk, fetch_error() %||% "нет данных")
     next
   }
   fetched[[tk]] <- cnd
