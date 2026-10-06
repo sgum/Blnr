@@ -36,6 +36,7 @@ source("R/snapshots.R"); source("R/watchlist.R"); source("R/store.R")
 source("R/marketdata.R")
 source("R/exante_api.R"); source("R/catalog.R"); source("R/exante_candles.R")
 source("R/trade_order.R")
+source("R/orders.R")
 source("R/ledger.R")
 source("R/portfolio.R"); source("R/forecast.R")
 source("R/forecast_store.R")
@@ -1175,7 +1176,95 @@ local({
                "GOOGL.NASDAQ"))
 })
 
-cat("== 18. Поручения: по умолчанию НИЧЕГО не отправляется ==\n")
+cat("== 18. Журнал поручений: видно, ЧТО ИСПОЛНИЛОСЬ ==\n")
+# До 06.10.2026 журнал записывал только отправку и лежал файлом, который не
+# выводился на экран. В тот день окно показывало GOOGL, а на счёт ушёл AMD —
+# запись об этом была, но увидеть её было негде, а «отправлено» не говорит ни
+# цены, ни объёма исполнения.
+local({
+  tmpstore <- file.path(tempdir(), paste0("ord_", as.integer(runif(1, 1e6, 9e6))))
+  old_dir <- BLNR_STORE_DIR; BLNR_STORE_DIR <<- tmpstore
+  on.exit({ BLNR_STORE_DIR <<- old_dir; unlink(tmpstore, recursive = TRUE) }, add = TRUE)
+
+  ok("пустой журнал читается, а не падает", nrow(orders_read()) == 0)
+
+  store_append_order("s.gumerov", "buy", "AMD.NASDAQ", 3, "отправлено",
+                     order_id = "ord-1")
+  j <- orders_read()
+  ok("поручение записано", nrow(j) == 1L && identical(j$symbol[1], "AMD.NASDAQ"))
+  ok("идентификатор поручения сохранён", identical(j$order_id[1], "ord-1"))
+  ok("исполнение пока неизвестно", !is.finite(j$filled_qty[1]))
+  ok("и так и написано на экране",
+     grepl("не подтверждено", orders_outcome_text(j[1])))
+
+  # --- сверка с брокером ----------------------------------------------------
+  resp <- list(orderState = list(status = "filled", fills = list(
+    list(quantity = "1", price = "649.00", timestamp = "2026-10-06T14:37:01Z"),
+    list(quantity = "2", price = "649.045", timestamp = "2026-10-06T14:37:02Z"))))
+  j2 <- orders_reconcile(get_order = function(id) resp)
+  ok("исполнение дописано в журнал", isTRUE(all.equal(j2$filled_qty[1], 3)))
+  # Средневзвешенная, а не цена первой сделки: частичные исполнения считаются
+  # по объёму, иначе цена поручения будет неверной.
+  ok("цена средневзвешенная по объёму",
+     isTRUE(all.equal(j2$fill_price[1], (1*649.00 + 2*649.045)/3)))
+  ok("статус брокера сохранён", identical(j2$broker_status[1], "filled"))
+  ok("на экране видно, что и почём куплено",
+     grepl("куплено 3 шт", orders_outcome_text(j2[1])))
+
+  # Повторная сверка не ходит к брокеру за уже известным: лишние запросы к
+  # торговому API в финансовом стенде не нужны.
+  calls <- 0L
+  orders_reconcile(get_order = function(id) { calls <<- calls + 1L; resp })
+  ok("исполненное повторно не опрашивается", calls == 0L)
+
+  # Отказ брокера не затирает запись и не выдумывает исполнение.
+  store_append_order("s.gumerov", "buy", "GS.NYSE", 1, "отправлено", order_id = "ord-2")
+  j3 <- orders_reconcile(get_order = function(id) list(error = "exante_http_error"))
+  ok("недоступный брокер не портит журнал",
+     nrow(j3) == 2L && !is.finite(j3[symbol == "GS.NYSE", filled_qty]))
+
+  # Поручение без идентификатора сверить нечем — и опрашивать его не пытаемся.
+  store_append_order("s.gumerov", "sell", "GE.NYSE", 5, "отказ", "брокер отклонил")
+  calls2 <- 0L
+  orders_reconcile(get_order = function(id) { calls2 <<- calls2 + 1L; resp })
+  ok("строку без идентификатора не опрашиваем", calls2 == 1L)  # только ord-2
+
+  # Старое поручение не опрашиваем бесконечно.
+  old_row <- orders_read()
+  old_row[symbol == "GS.NYSE", at := Sys.time() - 60 * 60 * 24 * 40]
+  orders_write(old_row)
+  calls3 <- 0L
+  orders_reconcile(get_order = function(id) { calls3 <<- calls3 + 1L; resp })
+  ok("поручения старше двух недель не опрашиваются", calls3 == 0L)
+
+  # --- совместимость со СТАРЫМ файлом журнала -------------------------------
+  # Файл прежней версии колонок об исполнении не имел вовсе. Терять по этой
+  # причине историю распоряжений нельзя.
+  data.table::fwrite(data.table(
+    at = "2026-09-23T19:57:56Z", user = "s.gumerov", side = "buy",
+    symbol = "GOOGL.NASDAQ", quantity = 2, status = "отправлено", detail = ""),
+    store_orders_path())
+  j4 <- orders_read()
+  ok("старый файл журнала читается", nrow(j4) == 1L)
+  ok("колонки исполнения добавлены пустыми",
+     all(c("order_id", "filled_qty") %in% names(j4)) && !is.finite(j4$filled_qty[1]))
+  store_append_order("s.gumerov", "buy", "AMD.NASDAQ", 3, "отправлено", order_id = "ord-9")
+  j5 <- orders_read()
+  ok("дозапись в старый файл не теряет прежние строки", nrow(j5) == 2L)
+  ok("и не портит новые колонки",
+     identical(j5[symbol == "AMD.NASDAQ", order_id], "ord-9"))
+
+  # --- разбор ответа брокера ------------------------------------------------
+  ok("orderId достаётся из массива поручений",
+     identical(orders_extract_id(list(list(orderId = "abc"))), "abc"))
+  ok("orderId достаётся из одиночного объекта",
+     identical(orders_extract_id(list(orderId = "xyz")), "xyz"))
+  ok("без orderId -> NA, но без падения",
+     is.na(orders_extract_id(list(list(foo = 1)))))
+  ok("пустой ответ -> NA", is.na(orders_extract_id(NULL)))
+})
+
+cat("== 19. Поручения: по умолчанию НИЧЕГО не отправляется ==\n")
 # Стенд распоряжается реальными деньгами, поэтому отправка отделена от сборки
 # запроса. exante_place_order() без apply = TRUE обязана быть безвредной: она
 # возвращает тело запроса и не делает ни одного сетевого вызова.
@@ -1232,7 +1321,7 @@ local({
      identical(o$status[2], "отказ"))
 })
 
-cat("== 19. Результат против модели — в деньгах ==\n")
+cat("== 20. Результат против модели — в деньгах ==\n")
 # В процентах это была доходность ВЛОЖЕННОГО В БУМАГИ: одна акция за $285,
 # упавшая на 20%, рисовала «портфель −20%», хотя на счёте лежали ещё десятки
 # тысяч наличными. В деньгах подменить смысл нечем.
@@ -1271,7 +1360,7 @@ local({
      !any(c("fact_pct", "model_pct", "dev_pp") %in% names(d)))
 })
 
-cat("== 20. Динамика расхождения по каждой бумаге ==\n")
+cat("== 21. Динамика расхождения по каждой бумаге ==\n")
 # Столбики «на дату» отвечают, насколько модель ошиблась к сегодняшнему дню,
 # но не отвечают, ошибалась ли она так всегда. Бумага, три недели шедшая по
 # модели и обвалившаяся вчера, и бумага, разошедшаяся с первого дня, дают
@@ -1451,7 +1540,7 @@ local({
      isTRUE(all.equal(d4[date == last & ticker == "AAA", fact_pct], -20)))
 })
 
-cat("== 21. Хранилище экселей с прогнозом ==\n")
+cat("== 22. Хранилище экселей с прогнозом ==\n")
 # Прежде путь к прогнозу указывал на ОДИН файл: новый расчёт ложился поверх
 # старого, прежняя версия исчезала, а файл, поданный с экрана, жил до конца
 # сессии Shiny — то есть пропадал у всех при первой же выкатке.
@@ -1548,7 +1637,7 @@ local({
   ok("и в реестр не попадает", nrow(forecast_registry()) == 1L)
 })
 
-cat("== 22. Выгрузка в типовом формате мониторинга ==\n")
+cat("== 23. Выгрузка в типовом формате мониторинга ==\n")
 # Формат разобран по эталону владельца («OptionActual <дата>.xlsx»). Проверка
 # держит его строение: если лист «Реестр» переедет или у листа инструмента
 # сдвинется блок данных, файл перестанет открываться рабочими формулами —
@@ -1609,7 +1698,7 @@ local({
      any(grepl("нет данных", as.character(unlist(reg2)))))
 })
 
-cat("== 23. Сборка интерфейса ==\n")
+cat("== 24. Сборка интерфейса ==\n")
 # Гейт против класса дефектов «экран не собрался», который до выкладки ничем
 # не виден: перекрытые имена функций (jsonlite::validate поверх shiny::validate,
 # httr::config поверх plotly::config), пакет, нужный при СБОРКЕ UI, но

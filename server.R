@@ -1155,9 +1155,11 @@ shinyServer(function(input, output, session) {
     }
     res <- exante_place_order(acct, sym, o$side, qty, apply = TRUE)
     ok <- isTRUE(res$ok)
+    oid <- if (ok) orders_extract_id(res$response) else NA_character_
     store_append_order(USER$login %||% "?", o$side, sym, qty,
                        if (ok) "отправлено" else "отказ",
-                       if (ok) "" else paste(res$error, res$message))
+                       if (ok) "" else paste(res$error, res$message),
+                       order_id = oid)
     cat(sprintf("[TRADE] %s %s %s x%g -> %s\n", USER$login %||% "?", o$side,
                 sym, qty, if (ok) "OK" else paste(res$error, res$status %||% "")))
     removeModal()
@@ -1181,6 +1183,7 @@ shinyServer(function(input, output, session) {
   right_tab <- reactiveVal("chart")
   observeEvent(input$tab_chart, right_tab("chart"))
   observeEvent(input$tab_registry, right_tab("registry"))
+  observeEvent(input$tab_orders, right_tab("orders"))
 
   output$right_col <- renderUI({
     tabs <- tags$div(
@@ -1188,8 +1191,32 @@ shinyServer(function(input, output, session) {
       actionButton("tab_chart", "График",
                    class = if (identical(right_tab(), "chart")) "on" else NULL),
       actionButton("tab_registry", "Справочник",
-                   class = if (identical(right_tab(), "registry")) "on" else NULL)
+                   class = if (identical(right_tab(), "registry")) "on" else NULL),
+      actionButton("tab_orders", "Журнал",
+                   class = if (identical(right_tab(), "orders")) "on" else NULL)
     )
+    if (identical(right_tab(), "orders")) {
+      return(panel(
+        "Журнал поручений",
+        sub = textOutput("ord_sub", inline = TRUE),
+        tip = paste0(
+          "Всё, что отправлено на счёт С ЭТОГО СТЕНДА: когда, кто, что, ",
+          "сколько — и ЧТО ИЗ ЭТОГО ВЫШЛО у брокера. Вторая половина важнее ",
+          "первой: 06.10.2026 окно подтверждения показывало GOOGL, а на счёт ",
+          "ушла покупка 3 акций AMD по $649.03, и заметить это было негде — ",
+          "журнал лежал файлом в хранилище и на экран не выводился вовсе, а ",
+          "строка «отправлено» не говорит ни цены, ни бумаги исполнения. ",
+          "Теперь по каждому поручению видно исполнение: сколько и почём. ",
+          "Строки сверяются с брокером при открытии журнала; поручения старше ",
+          "двух недель больше не опрашиваются. Сделки, совершённые НЕ со ",
+          "стенда (в приложении брокера), сюда не попадают — они видны в ",
+          "таблице позиций и на графике инструмента."),
+        right = tabs,
+        body_class = "bd--flush",
+        tags$div(class = "wl", tags$div(class = "wl-list", uiOutput("ord_table")))
+      ))
+    }
+
     if (identical(right_tab(), "registry")) {
       return(panel(
         "Наблюдение и справочник",
@@ -1252,6 +1279,60 @@ shinyServer(function(input, output, session) {
                 choices = stats::setNames(as.list(wl$ticker),
                                           paste0(wl$ticker, " \u00b7 ", wl$name_ru)),
                 selected = sel)
+  })
+
+  # --- журнал поручений -----------------------------------------------------
+  # Сверка с брокером идёт ЛЕНИВО, при открытии вкладки: поручений единицы в
+  # день, а фоновый таймер в финансовом стенде — это запросы, о которых никто
+  # не помнит.
+  orders_now <- reactive({
+    right_tab()
+    ledger_rv()
+    tryCatch(orders_reconcile(), error = function(e) {
+      tryCatch(orders_read(), error = function(e2) orders_empty())
+    })
+  })
+
+  output$ord_sub <- renderText({
+    o <- orders_now()
+    if (nrow(o) == 0) return("пусто")
+    sprintf("%d %s", nrow(o),
+            if (nrow(o) %% 10 == 1 && nrow(o) %% 100 != 11) "поручение" else "поручений")
+  })
+
+  output$ord_table <- renderUI({
+    o <- orders_now()
+    if (nrow(o) == 0) {
+      return(empty_state(
+        "Со стенда поручений ещё не отправляли. Здесь появится каждое: ",
+        "когда, кто, что и ",tags$b("что из этого вышло"), " у брокера."))
+    }
+    rows <- lapply(seq_len(nrow(o)), function(i) {
+      r <- o[i]
+      filled <- is.finite(r$filled_qty) && r$filled_qty > 0
+      # РАСХОЖДЕНИЕ КОЛИЧЕСТВА — на экран, а не в лог: частичное исполнение
+      # меняет состав счёта не так, как было задумано.
+      mismatch <- filled && is.finite(r$quantity) && r$filled_qty != r$quantity
+      tags$tr(
+        class = if (identical(r$status, "отказ")) "wl-row--off" else NULL,
+        tags$td(class = "mut", format(r$at, "%d.%m %H:%M")),
+        tags$td(tags$b(r$symbol),
+                tags$span(class = "wl-src",
+                          if (identical(r$side, "buy")) "покупка" else "продажа")),
+        tags$td(class = "r", formatC(r$quantity, format = "d")),
+        tags$td(class = if (filled) "pos" else "mut",
+                orders_outcome_text(r),
+                if (mismatch) tags$span(class = "neg",
+                  sprintf(" \u00b7 заказано %g", r$quantity))),
+        tags$td(class = "mut", r$user)
+      )
+    })
+    tags$table(
+      tags$thead(tags$tr(tags$th("Когда"), tags$th("Бумага"),
+                         tags$th(class = "r", "Заказано"),
+                         tags$th("Исполнено"), tags$th("Кто"))),
+      tags$tbody(rows)
+    )
   })
 
   # --- справочник ----------------------------------------------------------

@@ -399,15 +399,37 @@ store_read_orders <- function() {
   dt[]
 }
 
-store_append_order <- function(user, side, symbol, quantity, status, detail = "") {
+store_append_order <- function(user, side, symbol, quantity, status, detail = "",
+                               order_id = NA_character_) {
   dir.create(BLNR_STORE_DIR, showWarnings = FALSE, recursive = TRUE)
+  # Схема строки описана в R/orders.R (ORDERS_COLS): колонки об ИСПОЛНЕНИИ
+  # заводятся сразу пустыми, чтобы дописать их сверкой с брокером. Без них
+  # журнал отвечает только «отправлено» — а вопрос, который задают потом,
+  # звучит «что реально купилось и почём».
   row <- data.table::data.table(
     at = Sys.time(), user = as.character(user), side = as.character(side),
     symbol = as.character(symbol), quantity = as.numeric(quantity),
     status = as.character(status),
-    detail = substr(as.character(detail), 1, 500)
+    detail = substr(as.character(detail), 1, 500),
+    order_id = as.character(order_id),
+    filled_qty = NA_real_, fill_price = NA_real_,
+    filled_at = NA_character_, broker_status = NA_character_
   )
-  data.table::fwrite(row, store_orders_path(),
-                     append = file.exists(store_orders_path()))
+  # Прежний файл мог быть записан без колонок исполнения: дописывать строку
+  # другой ширины нельзя — получится мусор. Тогда перечитываем и пишем целиком.
+  f <- store_orders_path()
+  old_ok <- FALSE
+  if (file.exists(f)) {
+    hdr <- tryCatch(names(data.table::fread(f, nrows = 0)), error = function(e) character())
+    old_ok <- all(names(row) %in% hdr)
+  }
+  if (!file.exists(f) || old_ok) {
+    data.table::fwrite(row, f, append = file.exists(f))
+  } else {
+    old <- tryCatch(data.table::fread(f), error = function(e) NULL)
+    if (is.null(old)) data.table::fwrite(row, f)
+    else data.table::fwrite(data.table::rbindlist(list(old, row), use.names = TRUE,
+                                                  fill = TRUE), f)
+  }
   invisible(TRUE)
 }
