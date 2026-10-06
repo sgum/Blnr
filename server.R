@@ -1038,12 +1038,23 @@ shinyServer(function(input, output, session) {
     ))
   })
 
-  # Бумага поручения: при покупке её выбирают в окне, при продаже она задана
-  # строкой, по которой нажали.
-  trade_ticker <- reactive({
+  # ТЕЛО ПОРУЧЕНИЯ — один реактив, который читают И предпросмотр, И отправка.
+  #
+  # Пока это были два отдельных выражения, они разошлись: окно показывало
+  # GOOGL (выбор из списка), а на счёт ушёл AMD (тикер, с которым окно
+  # открыли). 06.10.2026 так куплено 3 акции AMD по $649.03 вместо Google.
+  # Увидеть дефект по экрану было нельзя — экран показывал верное.
+  trade_order <- reactive({
     r <- trade_req()
-    if (is.null(r)) return(NA_character_)
-    if (identical(r$side, "buy")) (input$trade_ticker %||% r$ticker) else r$ticker
+    if (is.null(r)) return(NULL)
+    build_trade_order(
+      side          = r$side,
+      dialog_ticker = input$trade_ticker %||% NA_character_,
+      opened_ticker = r$ticker %||% NA_character_,
+      qty           = input$trade_qty,
+      max_qty       = r$max_qty %||% 0,
+      symbol_of     = function(tk) exante_symbol_for_ticker(tk, ledger = ledger_now())
+    )
   })
 
   # Список того, что уйдёт при продаже всего портфеля.
@@ -1090,25 +1101,11 @@ shinyServer(function(input, output, session) {
       return(NULL)
     }
 
-    tk <- trade_ticker()
-    qty <- suppressWarnings(as.numeric(input$trade_qty))
-    if (is.na(tk) || !nzchar(tk)) {
-      return(tags$div(class = "wl-msg bad", "Бумага не выбрана."))
-    }
-    sym <- exante_symbol_for_ticker(tk, ledger = ledger_now())
-    if (is.na(sym)) {
-      return(tags$div(class = "wl-msg bad",
-        paste0("Не знаю биржевой код для ", tk,
-               ". Он появится после первой сделки по этой бумаге на счёте — ",
-               "гадать суффикс нельзя, GS.NYSE и GS.NASDAQ это разные ",
-               "инструменты.")))
-    }
-    if (!is.finite(qty) || qty <= 0) {
-      return(tags$div(class = "wl-msg bad", "Количество должно быть положительным."))
-    }
-    if (identical(r$side, "sell") && qty > r$max_qty) {
-      return(tags$div(class = "wl-msg bad",
-        sprintf("В портфеле только %g шт. Продать больше нельзя.", r$max_qty)))
+    o <- trade_order()
+    req(!is.null(o))
+    tk <- o$ticker; qty <- o$qty; sym <- o$symbol
+    if (!isTRUE(o$ok)) {
+      return(tags$div(class = "wl-msg bad", o$error))
     }
     px <- md_last_price(tk)
     est <- if (is.finite(px)) qty * px else NA_real_
@@ -1140,14 +1137,14 @@ shinyServer(function(input, output, session) {
       return(invisible(NULL))
     }
     r <- trade_req(); req(r)
-    qty <- suppressWarnings(as.numeric(input$trade_qty))
-    sym <- exante_symbol_for_ticker(r$ticker, ledger = ledger_now())
-    bad <- if (is.na(sym)) "неизвестен биржевой код"
-           else if (!is.finite(qty) || qty <= 0) "некорректное количество"
-           else if (identical(r$side, "sell") && qty > r$max_qty) "больше, чем есть в портфеле"
-           else NULL
-    if (!is.null(bad)) {
-      showNotification(paste("Поручение не отправлено:", bad), type = "error", duration = 10)
+    # ТО ЖЕ САМОЕ тело, что показано в окне. Пересобирать его здесь заново
+    # нельзя: именно так предпросмотр и отправка разошлись 06.10.2026.
+    o <- trade_order(); req(!is.null(o))
+    qty <- o$qty
+    sym <- o$symbol
+    if (!isTRUE(o$ok)) {
+      showNotification(paste("Поручение не отправлено:", o$error),
+                        type = "error", duration = 10)
       return(invisible(NULL))
     }
     acct <- exante_primary_account()
@@ -1156,17 +1153,17 @@ shinyServer(function(input, output, session) {
                         type = "error", duration = 10)
       return(invisible(NULL))
     }
-    res <- exante_place_order(acct, sym, r$side, qty, apply = TRUE)
+    res <- exante_place_order(acct, sym, o$side, qty, apply = TRUE)
     ok <- isTRUE(res$ok)
-    store_append_order(USER$login %||% "?", r$side, sym, qty,
+    store_append_order(USER$login %||% "?", o$side, sym, qty,
                        if (ok) "отправлено" else "отказ",
                        if (ok) "" else paste(res$error, res$message))
-    cat(sprintf("[TRADE] %s %s %s x%g -> %s\n", USER$login %||% "?", r$side,
+    cat(sprintf("[TRADE] %s %s %s x%g -> %s\n", USER$login %||% "?", o$side,
                 sym, qty, if (ok) "OK" else paste(res$error, res$status %||% "")))
     removeModal()
     if (ok) {
       showNotification(sprintf("Поручение отправлено: %s %s %g шт.",
-                               if (r$side == "buy") "покупка" else "продажа",
+                               if (o$side == "buy") "покупка" else "продажа",
                                sym, qty), type = "message", duration = 10)
       # Реестр перечитываем из Exante: состав счёта изменится, и держать на
       # экране вчерашнюю картину после собственной сделки нельзя.

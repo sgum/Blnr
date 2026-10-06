@@ -35,6 +35,7 @@ portfolio_holdings <- data.table(
 source("R/snapshots.R"); source("R/watchlist.R"); source("R/store.R")
 source("R/marketdata.R")
 source("R/exante_api.R"); source("R/catalog.R"); source("R/exante_candles.R")
+source("R/trade_order.R")
 source("R/ledger.R")
 source("R/portfolio.R"); source("R/forecast.R")
 source("R/forecast_store.R")
@@ -1099,7 +1100,82 @@ local({
                                                collapse = "\n")))
 })
 
-cat("== 17. Поручения: по умолчанию НИЧЕГО не отправляется ==\n")
+cat("== 17. Тело поручения: что показано, то и уходит ==\n")
+# 06.10.2026 владелец купил через стенд 3 акции Google — на счёт ушла покупка
+# 3 акций AMD по $649.03. Окно подтверждения показывало GOOGL (выбор из
+# списка), а отправка брала тикер, с которым окно ОТКРЫВАЛОСЬ, то есть бумагу
+# с графика. Два выражения об одном и том же разошлись, и по экрану это было
+# не видно: экран показывал верное.
+local({
+  sym_of <- function(tk) {
+    m <- c(GOOGL = "GOOGL.NASDAQ", AMD = "AMD.NASDAQ", GS = "GS.NYSE")
+    if (tk %in% names(m)) unname(m[tk]) else NA_character_
+  }
+
+  # ГЛАВНАЯ проверка: окно открыли с графика на AMD, в списке выбрали GOOGL.
+  # Уйти обязан GOOGL.
+  o <- build_trade_order("buy", dialog_ticker = "GOOGL", opened_ticker = "AMD",
+                         qty = 3, symbol_of = sym_of)
+  ok("при покупке уходит выбор из СПИСКА, а не бумага с графика",
+     identical(o$ticker, "GOOGL") && identical(o$symbol, "GOOGL.NASDAQ"))
+  ok("и количество берётся из поля", identical(o$qty, 3))
+  ok("поручение признано годным", isTRUE(o$ok) && is.null(o$error))
+
+  # Список пуст (окно ещё не отрисовано) — берём то, с чем открывали.
+  o2 <- build_trade_order("buy", dialog_ticker = NA_character_,
+                          opened_ticker = "AMD", qty = 1, symbol_of = sym_of)
+  ok("без выбора в списке берётся бумага, с которой открыли",
+     identical(o2$ticker, "AMD"))
+
+  # ПРИ ПРОДАЖЕ наоборот: продаём строку, по которой нажали. Списка там нет, и
+  # подменить бумагу он не должен даже если значение откуда-то осталось.
+  o3 <- build_trade_order("sell", dialog_ticker = "GOOGL", opened_ticker = "GS",
+                          qty = 1, max_qty = 1, symbol_of = sym_of)
+  ok("при продаже уходит строка, по которой нажали", identical(o3$ticker, "GS"))
+
+  # Отказы — теми же словами, что увидит человек, и ДО отправки.
+  ok("неизвестный биржевой код -> отказ",
+     !isTRUE(build_trade_order("buy", dialog_ticker = "ZZZ", qty = 1,
+                               symbol_of = sym_of)$ok))
+  ok("нулевое количество -> отказ",
+     !isTRUE(build_trade_order("buy", dialog_ticker = "AMD", qty = 0,
+                               symbol_of = sym_of)$ok))
+  ok("отрицательное количество -> отказ",
+     !isTRUE(build_trade_order("buy", dialog_ticker = "AMD", qty = -5,
+                               symbol_of = sym_of)$ok))
+  ok("пустое количество -> отказ",
+     !isTRUE(build_trade_order("buy", dialog_ticker = "AMD", qty = NA,
+                               symbol_of = sym_of)$ok))
+  ok("бумага не выбрана -> отказ",
+     !isTRUE(build_trade_order("buy", dialog_ticker = NA_character_,
+                               opened_ticker = NA_character_, qty = 1,
+                               symbol_of = sym_of)$ok))
+  ok("продажа больше, чем есть -> отказ",
+     !isTRUE(build_trade_order("sell", opened_ticker = "GS", qty = 5, max_qty = 1,
+                               symbol_of = sym_of)$ok))
+  ok("продажа в пределах портфеля проходит",
+     isTRUE(build_trade_order("sell", opened_ticker = "GS", qty = 1, max_qty = 1,
+                              symbol_of = sym_of)$ok))
+
+  # Регистр не должен заводить вторую бумагу.
+  ok("тикер приводится к верхнему регистру",
+     identical(build_trade_order("buy", dialog_ticker = "googl", qty = 1,
+                                 symbol_of = sym_of)$ticker, "GOOGL"))
+
+  # Продажа всего портфеля телом поручения не описывается — у неё свой путь.
+  ok("продажа всего портфеля проходит отдельной веткой",
+     isTRUE(build_trade_order("sell_all")$ok))
+
+  # Предъявление дефекта: если отправка СНОВА начнёт читать бумагу окна, а не
+  # выбор, эта проверка покраснеет.
+  ok("расхождение окна и отправки невозможно: источник один",
+     identical(build_trade_order("buy", dialog_ticker = "GOOGL",
+                                 opened_ticker = "AMD", qty = 3,
+                                 symbol_of = sym_of)$symbol,
+               "GOOGL.NASDAQ"))
+})
+
+cat("== 18. Поручения: по умолчанию НИЧЕГО не отправляется ==\n")
 # Стенд распоряжается реальными деньгами, поэтому отправка отделена от сборки
 # запроса. exante_place_order() без apply = TRUE обязана быть безвредной: она
 # возвращает тело запроса и не делает ни одного сетевого вызова.
@@ -1156,7 +1232,7 @@ local({
      identical(o$status[2], "отказ"))
 })
 
-cat("== 18. Результат против модели — в деньгах ==\n")
+cat("== 19. Результат против модели — в деньгах ==\n")
 # В процентах это была доходность ВЛОЖЕННОГО В БУМАГИ: одна акция за $285,
 # упавшая на 20%, рисовала «портфель −20%», хотя на счёте лежали ещё десятки
 # тысяч наличными. В деньгах подменить смысл нечем.
@@ -1195,7 +1271,7 @@ local({
      !any(c("fact_pct", "model_pct", "dev_pp") %in% names(d)))
 })
 
-cat("== 19. Динамика расхождения по каждой бумаге ==\n")
+cat("== 20. Динамика расхождения по каждой бумаге ==\n")
 # Столбики «на дату» отвечают, насколько модель ошиблась к сегодняшнему дню,
 # но не отвечают, ошибалась ли она так всегда. Бумага, три недели шедшая по
 # модели и обвалившаяся вчера, и бумага, разошедшаяся с первого дня, дают
@@ -1375,7 +1451,7 @@ local({
      isTRUE(all.equal(d4[date == last & ticker == "AAA", fact_pct], -20)))
 })
 
-cat("== 20. Хранилище экселей с прогнозом ==\n")
+cat("== 21. Хранилище экселей с прогнозом ==\n")
 # Прежде путь к прогнозу указывал на ОДИН файл: новый расчёт ложился поверх
 # старого, прежняя версия исчезала, а файл, поданный с экрана, жил до конца
 # сессии Shiny — то есть пропадал у всех при первой же выкатке.
@@ -1472,7 +1548,7 @@ local({
   ok("и в реестр не попадает", nrow(forecast_registry()) == 1L)
 })
 
-cat("== 21. Выгрузка в типовом формате мониторинга ==\n")
+cat("== 22. Выгрузка в типовом формате мониторинга ==\n")
 # Формат разобран по эталону владельца («OptionActual <дата>.xlsx»). Проверка
 # держит его строение: если лист «Реестр» переедет или у листа инструмента
 # сдвинется блок данных, файл перестанет открываться рабочими формулами —
@@ -1533,7 +1609,7 @@ local({
      any(grepl("нет данных", as.character(unlist(reg2)))))
 })
 
-cat("== 22. Сборка интерфейса ==\n")
+cat("== 23. Сборка интерфейса ==\n")
 # Гейт против класса дефектов «экран не собрался», который до выкладки ничем
 # не виден: перекрытые имена функций (jsonlite::validate поверх shiny::validate,
 # httr::config поверх plotly::config), пакет, нужный при СБОРКЕ UI, но
