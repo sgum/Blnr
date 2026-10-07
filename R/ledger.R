@@ -86,7 +86,10 @@ ledger_events <- function(ledger, currency = "USD") {
   ev <- merge(ev, cs, by = "grp", all.x = TRUE)
   ev[is.na(cash), cash := 0]
   data.table::setorder(ev, value_date, symbol)
-  ev[, .(value_date, symbol, qty, cash, price)]
+  # grp — это orderId сделки (или суррогат «бумага@дата» для зачислений). Он
+  # нужен журналу решений: по нему сделка связывается с поручением, которое
+  # отправили со стенда.
+  ev[, .(value_date, symbol, qty, cash, price, order_id = grp)]
 }
 
 # Позиции на дату: количество, стоимость входа и средняя цена по методу

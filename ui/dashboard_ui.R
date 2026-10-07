@@ -176,6 +176,29 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
 .bd--plot>div,.bd--plot .plotly,.bd--plot .html-widget{height:100%!important}
 .bd--flush{padding:0;display:flex;flex-direction:column}
 .empty{padding:14px 12px;font-size:12px;color:var(--dim)}
+/* Строка отдельной покупки под строкой бумаги. Тусклее и с отступом: это
+   разбивка того же, что в строке выше, а не новая позиция. */
+.rk tr.lot td{background:#fbfcfd;color:var(--dim);font-size:11px;
+  border-bottom:1px solid #f4f6f8}
+.rk tr.lot td.nm{padding-left:14px;font-weight:600}
+.rk tr.lot .lot-mark{color:var(--faint);margin-right:5px}
+.rk tr.lot:hover td{background:#fff7e6}
+
+/* --- журнал решений: сделка от входа до выхода --- */
+.lots{width:100%;border-collapse:collapse;font-size:11px}
+.lots th{position:sticky;background:var(--muted);font-weight:700;color:var(--dim);
+  padding:3px 6px;border-bottom:1px solid var(--border);white-space:nowrap}
+.lots thead tr:first-child th{top:0;font-size:10px}
+.lots thead tr:last-child th{top:19px;font-size:10px}
+/* Шапки «Покупка» и «Продажа» группируют по три колонки: без этой рамки
+   числа входа и выхода сливаются в одну ленту и путаются местами. */
+.lots th.grp{text-align:center;color:var(--text);
+  border-left:1px solid var(--border);border-right:1px solid var(--border)}
+.lots td{padding:3px 6px;border-bottom:1px solid #f0f2f5;white-space:nowrap}
+.lots td.r,.lots th.r{text-align:right}
+.lots tr:hover td{background:#fff7e6}
+.lots .faint{color:var(--faint)}
+
 /* --- список сохранённых прогнозов в модалке --- */
 .fc-list{border:1px solid var(--border);border-radius:8px;overflow:hidden;
   margin-bottom:10px;max-height:190px;overflow-y:auto}
