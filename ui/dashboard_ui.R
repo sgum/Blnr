@@ -155,7 +155,14 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
    единственной ячейкой грида и ломал раскладку ряда. */
 .blnr-row--top>.shiny-html-output,.blnr-row--bot>.shiny-html-output{display:contents}
 .blnr-col>.shiny-html-output{display:contents}
-.blnr-row--bot{grid-template-columns:repeat(auto-fit,minmax(0,1fr))}
+/* Та же пропорция колонок, что у верхнего ряда (.blnr-row--top), а не
+   произвольные равные доли: иначе левая/правая границы «Динамики счёта» и
+   «Результата против модели» не совпадали с границами «Позиций» и «Графика
+   инструмента» над ними, и ряды выглядели собранными из двух разных сеток
+   (замечание владельца 07.10.2026). Когда панель одна, server.R явно
+   растягивает её на весь ряд (grid-column:1/-1) — пустой второй колонки
+   справа тогда не остаётся. */
+.blnr-row--bot{grid-template-columns:minmax(0,1.12fr) minmax(360px,1fr)}
 
 /* --- карточка ---------------------------------------------------------- */
 /* overflow у карточки НЕ скрываем: всплывающая подсказка под «i» живёт внутри
@@ -427,6 +434,10 @@ tr.sig-cl{box-shadow:inset 3px 0 0 var(--bad)}
   .blnr-row--top>.card{height:400px}
   .blnr-col{grid-template-rows:none}
   .blnr-col>.card:last-child{height:300px}
+  /* На узком экране верхний ряд складывается в одну колонку — нижний обязан
+     повторить это, иначе остался бы в две колонки с минимумом 360px и
+     вылезал горизонтальной прокруткой. */
+  .blnr-row--bot{grid-template-columns:1fr}
   .blnr-row--bot .card{height:240px}
 }
 "

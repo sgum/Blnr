@@ -1957,6 +1957,14 @@ shinyServer(function(input, output, session) {
       )))
     }
     if (length(items) == 0) return(NULL)
+    # Единственная панель занимает ВСЮ ширину ряда явно, а не растягивается
+    # сеткой сама: нижний ряд выровнен по той же колоночной сетке, что и
+    # верхний (см. .blnr-row--bot в CSS), и без этого при одной панели вторая
+    # колонка просто пустовала бы справа.
+    if (length(items) == 1) {
+      return(tags$div(style = "grid-column:1 / -1;display:flex;flex-direction:column;min-height:0",
+                      items[[1]]))
+    }
     do.call(tagList, items)
   })
 
