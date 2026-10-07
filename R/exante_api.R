@@ -203,6 +203,16 @@ exante_transactions_dt <- function(account_id, limit = 5000) {
     data.table::data.table(
       id         = as.integer(t$id %||% NA),
       value_date = as.Date(t$valueDate %||% NA),
+      # Дата СДЕЛКИ из поля `when` (мс), а не дата расчётов. valueDate — это
+      # T+1, и покупка, сделанная сегодня, по нему попадает на завтра; на
+      # графике маркер сделки тогда уезжал за край свечей и пропадал вовсе.
+      # Биржевая дата берётся по Нью-Йорку, иначе в МСК съезжает на сутки.
+      trade_date = {
+        w <- suppressWarnings(as.numeric(t$when %||% NA))
+        if (is.finite(w)) as.Date(format(as.POSIXct(w / 1000, origin = "1970-01-01",
+                                 tz = "America/New_York"), "%Y-%m-%d"))
+        else as.Date(t$valueDate %||% NA)
+      },
       type       = as.character(t$operationType %||% ""),
       symbol     = as.character(t$symbolId %||% ""),
       asset      = as.character(t$asset %||% ""),

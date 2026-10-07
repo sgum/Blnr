@@ -185,7 +185,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
 .rk td.nm .lot-tag{color:var(--faint);font-weight:600;font-size:10.5px;
   margin-left:4px}
 
-.ord-switch{flex:none;padding:6px 8px;border-bottom:1px solid var(--border);
+/* Кнопка «+ Новое поручение» над журналом поручений: тот же отступ, что у
+   панели поиска справочника, чтобы правая колонка выглядела одним набором
+   виджетов, а не собранной наспех. */
+.ord-add{flex:none;padding:8px 10px;border-bottom:1px solid var(--border);
   background:var(--muted)}
 
 /* --- журнал решений: сделка от входа до выхода --- */
@@ -346,6 +349,14 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
 .ii.l .tip{left:-8px;transform:none}
 .ii.r .tip{left:auto;right:-8px;transform:none}
 .ii:hover .tip,.ii:focus .tip{display:block}
+/* Структура подсказки: суть крупнее, перечень — отбивкой, приписка тусклее.
+   Сплошной абзац в тёмном блоке не читается, глаз не за что зацепить. */
+.tb-lead{font-weight:600;margin-bottom:6px}
+.tb-list{margin:0;padding-left:16px;list-style:disc}
+.tb-list li{margin:3px 0}
+.tb-list li b{color:#fff}
+.tb-note{margin-top:7px;padding-top:6px;border-top:1px solid rgba(255,255,255,.15);
+  color:#aab0bd;font-size:11px}
 
 /* --- таблица позиций --------------------------------------------------- */
 .rk{overflow:auto;flex:1;min-height:0}
@@ -366,7 +377,27 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
 .rk tfoot tr.acct td{border-top:2px solid var(--orange)}
 .rk .nm{font-weight:800}
 
-/* --- компактные контролы Shiny ---------------------------------------- */
+/* Селектор инструмента поверх графика: по центру верха, широкий, с фоном
+   поверх свечей, чтобы читался. */
+.chart-wrap{position:relative;height:100%}
+.chart-sel{position:absolute;top:6px;left:50%;transform:translateX(-50%);
+  z-index:6;width:min(560px,80%)}
+.chart-sel .selectize-input,.chart-sel select.form-control{
+  background:rgba(255,255,255,.96);box-shadow:0 2px 10px rgba(0,0,0,.12);
+  border-color:var(--border);font-size:12.5px;font-weight:600;height:30px;
+  min-height:30px;border-radius:8px;text-align:center}
+.chart-sel .selectize-dropdown{font-size:12px}
+
+/* Сигнал фиксации: позиция/сделка перешла порог годовой доходности вверх
+   или вниз. Полоса слева — не заливка всей строки: заливка спорила бы с
+   красным/зелёным результата в соседних колонках и выглядела бы ошибкой, а
+   не сигналом. */
+tr.sig-tp{box-shadow:inset 3px 0 0 var(--ok)}
+tr.sig-cl{box-shadow:inset 3px 0 0 var(--bad)}
+.sig-dot{display:inline-block;margin-left:5px;font-size:9px;cursor:help}
+.sig-dot.tp{color:var(--ok)}
+.sig-dot.cl{color:var(--bad)}
+
 .blnr .form-group{margin:0}
 .blnr .selectize-input{min-height:26px;height:26px;padding:3px 22px 3px 8px;
   font-size:11.5px;line-height:18px;border-radius:6px;border-color:var(--border)}

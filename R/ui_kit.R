@@ -51,6 +51,24 @@ info_tip <- function(text, align = c("l", "r")) {
             tags$span(class = "tip", text))
 }
 
+# Структурированное содержимое подсказки под «i». Сплошной абзац в подсказке
+# не читается — глаз не находит, где главное и где перечень. Поэтому подсказка
+# собирается из частей: `lead` — одна строка сути; `...` — пункты (строки или
+# списки, где первый элемент пункта выделяется), и `note` — приписка мелким.
+# Это тот же принцип, что и везде на стенде: текст должен быть структурой, а
+# не стеной.
+tip_block <- function(lead, ..., note = NULL) {
+  items <- list(...)
+  bullets <- if (length(items)) tags$ul(class = "tb-list", lapply(items, function(it) {
+    if (length(it) >= 2) tags$li(tags$b(it[[1]]), paste0(" — ", it[[2]]))
+    else tags$li(if (is.list(it)) it[[1]] else it)
+  })) else NULL
+  tags$div(class = "tb",
+    tags$div(class = "tb-lead", lead),
+    bullets,
+    if (!is.null(note)) tags$div(class = "tb-note", note))
+}
+
 # Карточка с шапкой. Заголовок — жирная строка на белом с оранжевой линейкой
 # снизу; цветной «плашки» у шапки нет.
 panel <- function(title, ..., tip = NULL, tip_align = "l", sub = NULL,

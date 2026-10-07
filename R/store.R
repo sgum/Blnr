@@ -247,6 +247,12 @@ store_read_ledger <- function() {
   dt <- tryCatch(data.table::fread(f), error = function(e) NULL)
   if (is.null(dt) || nrow(dt) == 0) return(empty_ledger())
   dt[, value_date := as.Date(value_date)]
+  # Старый файл реестра не знал trade_date (дату сделки): для него она равна
+  # дате расчётов. После ночной перезагрузки колонка наполнится настоящими
+  # датами сделок.
+  if (!"trade_date" %in% names(dt)) dt[, trade_date := value_date]
+  dt[, trade_date := as.Date(trade_date)]
+  dt[is.na(trade_date), trade_date := value_date]
   for (col in c("type", "symbol", "asset", "order_id")) {
     if (col %in% names(dt)) dt[[col]] <- as.character(dt[[col]])
   }

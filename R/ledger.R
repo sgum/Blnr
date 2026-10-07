@@ -28,7 +28,8 @@ library(data.table)
 # Пустой реестр — единый источник схемы.
 empty_ledger <- function() {
   data.table::data.table(
-    id = integer(), value_date = as.Date(character()), type = character(),
+    id = integer(), value_date = as.Date(character()),
+    trade_date = as.Date(character()), type = character(),
     symbol = character(), asset = character(), amount = numeric(),
     price = numeric(), order_id = character()
   )
@@ -50,8 +51,8 @@ ledger_cash_at <- function(ledger, as_of = Sys.Date(), currency = "USD") {
 ledger_events <- function(ledger, currency = "USD") {
   if (nrow(ledger) == 0) {
     return(data.table::data.table(
-      value_date = as.Date(character()), symbol = character(),
-      qty = numeric(), cash = numeric(), price = numeric()
+      value_date = as.Date(character()), trade_date = as.Date(character()),
+      symbol = character(), qty = numeric(), cash = numeric(), price = numeric()
     ))
   }
   # Нога инструмента, а не валюты. Валютные конвертации приходят теми же
@@ -63,8 +64,8 @@ ledger_events <- function(ledger, currency = "USD") {
                  !grepl("/", asset, fixed = TRUE)]
   if (nrow(inst) == 0) {
     return(data.table::data.table(
-      value_date = as.Date(character()), symbol = character(),
-      qty = numeric(), cash = numeric(), price = numeric()
+      value_date = as.Date(character()), trade_date = as.Date(character()),
+      symbol = character(), qty = numeric(), cash = numeric(), price = numeric()
     ))
   }
   # Ордера без orderId (например зачисления) группируем по дате и бумаге.
@@ -77,7 +78,10 @@ ledger_events <- function(ledger, currency = "USD") {
   cash[, grp := data.table::fifelse(nzchar(order_id), order_id,
                                     paste0(symbol, "@", format(value_date)))]
 
+  # trade_date может отсутствовать в самодельных фикстурах — подстрахуемся.
+  if (!"trade_date" %in% names(inst)) inst[, trade_date := value_date]
   ev <- inst[, .(value_date = min(value_date),
+                 trade_date = min(trade_date),
                  qty = sum(amount, na.rm = TRUE),
                  price = suppressWarnings(stats::weighted.mean(
                    price, abs(amount), na.rm = TRUE))),
@@ -89,7 +93,7 @@ ledger_events <- function(ledger, currency = "USD") {
   # grp — это orderId сделки (или суррогат «бумага@дата» для зачислений). Он
   # нужен журналу решений: по нему сделка связывается с поручением, которое
   # отправили со стенда.
-  ev[, .(value_date, symbol, qty, cash, price, order_id = grp)]
+  ev[, .(value_date, trade_date, symbol, qty, cash, price, order_id = grp)]
 }
 
 # Позиции на дату: количество, стоимость входа и средняя цена по методу

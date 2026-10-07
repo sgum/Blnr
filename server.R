@@ -728,28 +728,16 @@ shinyServer(function(input, output, session) {
       sub = if (is_future())
               paste0("прогноз на ", format(sel_date(), "%d.%m.%Y"))
             else format(sel_date(), "%d.%m.%Y"),
-      tip = paste0(
-        "Цены — закрытие выбранной торговой сессии из локального хранилища. ",
-        "«Вложено» — сколько стоила позиция на входе, «Стоимость» — сколько ",
-        "стоит сейчас. Наличные показаны отдельной строкой, а вес считается ",
-        "от всего счёта: доля бумаги «28% портфеля» при половине счёта в ",
-        "деньгах была бы неправдой. Два итога — по бумагам и по счёту ",
-        "целиком. ",
-        "«От покупки» — результат позиции от цены входа. «Модель» — прогноз ",
-        "за ТОТ ЖЕ период владения: накопленный прогноз приведён к дате ",
-        "покупки, иначе бумага, купленная позже базы прогноза, присвоила бы ",
-        "себе движение цены за время, когда её не было. Δ = факт − модель в ",
-        "процентных пунктах. ОДНА СТРОКА — ОДНО РЕШЕНИЕ: покупки одной бумаги ",
-        "не усредняются, у каждой свои цена входа, срок и результат; ",
-        "продать можно только количество, пакетов у брокера нет, и продажа ",
-        "закрывает самые старые покупки. «Куплено» — дата покупки и срок ",
-        "владения НА ВЫБРАННУЮ ДАТУ (сдвиньте ползунок — срок вырастет): ",
-        "именно от этой даты отсчитываются и результат, и прогноз, ",
-        "потому что докупка меняет позицию. При нулевом сроке владения в ",
-        "«Ожидалось» стоит прочерк: за ноль дней модель не обещала ничего, и ",
-        "показать там 0% значило бы приписать ей обещание топтаться на месте. ",
-        "Фиксированной даты отсчёта на экране больше нет — она была бы чужой ",
-        "для бумаги, купленной позже. Клик по строке открывает её график."),
+      tip = tip_block(
+        "Каждая покупка — отдельной строкой, по своему решению.",
+        list("Результат", "рост позиции от цены входа до цены выбранной сессии"),
+        list("Ожидалось", "НАКОПЛЕННЫЙ прогноз модели за тот же срок — от даты ЭТОЙ покупки до выбранной даты, не мгновенный и не от базы прогноза"),
+        list("Лучше модели", "Результат минус Ожидалось, в процентных пунктах"),
+        list("Вес", "доля во всём счёте, включая наличные; наличные — отдельной строкой"),
+        list("Докупка не усредняет", "две покупки AMD — две строки с разными датами, ценой и сроком"),
+        list("Куплено", "дата покупки и срок владения на выбранную дату; от неё и считаются результат и прогноз"),
+        list("Полоса слева", sprintf("порог фиксации: ±%g%% годовых (зелёная — прибыль, красная — убыток); тот же сигнал в журнале решений", BLNR_SIGNAL_ANNUAL_PCT)),
+        note = "Нулевой срок владения → «Ожидалось» прочерк: за ноль дней модель ничего не обещала. Клик по строке открывает её график."),
       right = if (user_can_trade(USER$login) && exante_has_credentials() &&
                   !is_future() && identical(sel_date(), fact_date()))
                 tags$div(style = "display:flex;gap:6px",
@@ -787,28 +775,14 @@ shinyServer(function(input, output, session) {
         # меряют от моей цены входа, линии — от базы прогноза, и молчать о
         # такой разнице нельзя (см. vs_time_plot).
         sub = textOutput("vs_sub", inline = TRUE),
-        tip = paste0(
-          "Два вида отвечают на РАЗНЫЕ вопросы, и точка отсчёта у них разная. ",
-          "«На дату»: по каждой бумаге за период владения — фактический рост ",
-          "от МОЕЙ цены входа рядом с прогнозом модели за тот же период. Это ",
-          "результат позиции, расхождение столбиков и есть повод для решения. ",
-          "«Динамика»: как факт расходился с моделью по сессиям, от базы ",
-          "прогноза — то есть от дня, на который модель посчитана. К покупкам ",
-          "отношения не имеет и живёт, даже если бумага докуплена вчера. ",
-          "Оставьте ОДНУ бумагу — увидите две кривые: факт и модель в ",
-          "процентах от базы, а закрашенный зазор между ними и есть ошибка. ",
-          "Несколько бумаг — по одной линии на бумагу, это уже разница в ",
-          "процентных пунктах: двенадцать кривых на одном холсте не читаются, ",
-          "а разница сравнима между бумагами. Считать динамику от последней ",
-          "покупки нельзя: после докупки ряд схлопывается в одну точку. ",
-          "Зачем она: бумага, ",
-          "три недели шедшая по модели и обвалившаяся вчера, и бумага, ",
-          "разошедшаяся с первого дня, дают ОДИНАКОВЫЙ столбик, а решения по ",
-          "ним разные. Тикеры под шапкой выключаются щелчком — одна бумага с ",
-          "большим расхождением сжимает остальные в полоску, и на общей шкале ",
-          "их уже не прочитать; в портфеле и в загрузке бумага при этом ",
-          "остаётся. Пунктирный чип — бумаги нет в модели, на «Динамике» её ",
-          "линии не будет."),
+        tip = tip_block(
+          "Два вида с РАЗНОЙ точкой отсчёта — смотрите подпись карточки.",
+          list("На дату", "по каждой бумаге за срок владения: фактический рост от цены входа рядом с прогнозом за тот же срок; расхождение столбиков — повод для решения"),
+          list("Динамика", "ошибка модели по сессиям от базы прогноза; к покупкам отношения не имеет, живёт даже если бумага докуплена вчера"),
+          list("Одна бумага", "две кривые — факт и модель; закрашенный зазор и есть ошибка"),
+          list("Несколько", "по линии разницы на бумагу, в пп — так они сравнимы на общей шкале"),
+          list("Чипы", "выключают бумагу с графика; пунктирный чип — бумаги нет в модели"),
+          note = "Зачем «Динамика»: бумага, месяц шедшая по модели и обвалившаяся вчера, и бумага, разошедшаяся с первого дня, дают одинаковый столбик — а решения по ним разные."),
         right = uiOutput("vs_tabs"),
         body_class = "bd--flush",
         tags$div(class = "vs",
@@ -877,13 +851,25 @@ shinyServer(function(input, output, session) {
         # ответом). Дата покупки и есть естественное имя решения. У бумаги с
         # единственной покупкой суффикс не нужен — он только шумит.
         multi <- sum(open_lots$ticker == L$ticker) > 1L
+        # \u0421\u0438\u0433\u043d\u0430\u043b \u0444\u0438\u043a\u0441\u0430\u0446\u0438\u0438: \u043f\u043e \u0413\u041e\u0414\u041e\u0412\u041e\u0419 \u0434\u043e\u0445\u043e\u0434\u043d\u043e\u0441\u0442\u0438, \u043f\u0440\u0438\u0432\u0435\u0434\u0451\u043d\u043d\u043e\u0439 \u043e\u0442 \u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442\u0430 \u0438
+        # \u0441\u0440\u043e\u043a\u0430 \u0434\u0435\u0440\u0436\u0430\u043d\u0438\u044f \u044d\u0442\u043e\u0439 \u041a\u041e\u041d\u041a\u0420\u0415\u0422\u041d\u041e\u0419 \u043f\u043e\u043a\u0443\u043f\u043a\u0438 (\u043d\u0435 \u0432\u0441\u0435\u0439 \u043f\u043e\u0437\u0438\u0446\u0438\u0438 \u043f\u043e \u0431\u0443\u043c\u0430\u0433\u0435,
+        # \u043a\u043e\u0442\u043e\u0440\u0430\u044f \u0443\u0441\u0440\u0435\u0434\u043d\u0438\u043b\u0430 \u0431\u044b \u0440\u0430\u0437\u043d\u044b\u0435 \u0440\u0435\u0448\u0435\u043d\u0438\u044f \u043e\u0431\u0440\u0430\u0442\u043d\u043e). \u0421\u043c. R/signals.R \u2014
+        # \u0442\u0430\u043c \u0436\u0435 \u043e\u0431\u0430 \u043f\u0440\u0435\u0434\u043e\u0445\u0440\u0430\u043d\u0438\u0442\u0435\u043b\u044f (\u043c\u0438\u043d\u0438\u043c\u0430\u043b\u044c\u043d\u044b\u0439 \u0441\u0440\u043e\u043a, \u043c\u0438\u043d\u0438\u043c\u0430\u043b\u044c\u043d\u044b\u0439 \u0430\u0431\u0441\u043e\u043b\u044e\u0442),
+        # \u0431\u0435\u0437 \u043a\u043e\u0442\u043e\u0440\u044b\u0445 \u043e\u0434\u0438\u043d \u0434\u0435\u043d\u044c +0.5% \u0434\u0430\u043b \u0431\u044b \u00ab+180% \u0433\u043e\u0434\u043e\u0432\u044b\u0445\u00bb \u0438 \u043b\u043e\u0436\u043d\u0443\u044e \u0442\u0440\u0435\u0432\u043e\u0433\u0443.
+        sig <- fixation_signal(gr, held_days[i])
         tags$tr(
           class = paste(if (identical(L$ticker, sel)) "sel",
-                        if (!first_of_group) "lot-more"),
+                        if (!first_of_group) "lot-more",
+                        switch(sig, take_profit = "sig-tp", cut_loss = "sig-cl", "")),
+          title = if (nzchar(sig)) signal_text(sig, gr, held_days[i]) else NULL,
           onclick = sprintf("Shiny.setInputValue('pick_ticker','%s',{priority:'event'})", L$ticker),
           tags$td(class = "nm", L$ticker,
                   if (multi) tags$span(class = "lot-tag",
-                                       format(L$open_date, "\u00b7 %d.%m"))),
+                                       format(L$open_date, "\u00b7 %d.%m")),
+                  if (nzchar(sig)) tags$span(
+                    class = paste("sig-dot", if (sig == "take_profit") "tp" else "cl"),
+                    title = signal_text(sig, gr, held_days[i]),
+                    if (sig == "take_profit") "\u25b2" else "\u25bc")),
           tags$td(formatC(L$qty, format = "d")),
           plain(L$open_price), plain(px),
           num(day_pct, fmt_pct),
@@ -990,13 +976,21 @@ shinyServer(function(input, output, session) {
   # распоряжается реальными деньгами.
   trade_req <- reactiveVal(NULL)
 
-  # Кнопки в шапке карточки позиций. Ничего не отправляют — только открывают
-  # окно подтверждения, где показано, что именно уйдёт.
+  # Кнопки в шапке карточки позиций и в журнале поручений — оба места ведут
+  # к ОДНОМУ и тому же окну подтверждения, ничего не отправляют сами.
   observeEvent(input$buy_open, {
     req(user_can_trade(USER$login))
     shinyjs::runjs(sprintf(
       "Shiny.setInputValue('trade_open','buy|%s',{priority:'event'})",
       input$sel_ticker %||% ""))
+  })
+
+  observeEvent(input$buy_open2, {
+    req(user_can_trade(USER$login))
+    # Из журнала поручений бумага графиком не выбрана — список открывается
+    # на первом инструменте наблюдения, человек выбирает сам.
+    shinyjs::runjs(
+      "Shiny.setInputValue('trade_open','buy|',{priority:'event'})")
   })
 
   observeEvent(input$sell_all_open, {
@@ -1289,17 +1283,16 @@ shinyServer(function(input, output, session) {
   # Правая колонка: график инструмента или справочник наблюдения.
   # Справочник — вкладка того же виджета, а не отдельная карточка: он про те же
   # инструменты, что и график, и занимать ими два места на экране незачем.
+  # Разделы правой колонки — на ОДНОМ уровне: «Решения» и «Поручения» это не
+  # вкладки внутри «Журнала», а самостоятельные виджеты рядом с графиком и
+  # справочником. Решения отвечают «удачной ли была покупка», поручения —
+  # «что именно стенд отправил брокеру и что тот ответил»; это разные вопросы,
+  # и прятать один внутрь другого незачем.
   right_tab <- reactiveVal("chart")
   observeEvent(input$tab_chart, right_tab("chart"))
   observeEvent(input$tab_registry, right_tab("registry"))
+  observeEvent(input$tab_deals, right_tab("deals"))
   observeEvent(input$tab_orders, right_tab("orders"))
-  # Два журнала рядом, а не вместо друг друга. Решения отвечают «удачной ли
-  # была покупка», поручения — «что именно стенд отправил брокеру и что тот
-  # ответил». Второе нужно, когда расходятся намерение и результат: ровно так
-  # 06.10.2026 обнаружилось, что окно показывало GOOGL, а ушёл AMD.
-  ord_view <- reactiveVal("deals")
-  observeEvent(input$ord_tab_deals, ord_view("deals"))
-  observeEvent(input$ord_tab_orders, ord_view("orders"))
 
   output$right_col <- renderUI({
     tabs <- tags$div(
@@ -1308,43 +1301,48 @@ shinyServer(function(input, output, session) {
                    class = if (identical(right_tab(), "chart")) "on" else NULL),
       actionButton("tab_registry", "Справочник",
                    class = if (identical(right_tab(), "registry")) "on" else NULL),
-      actionButton("tab_orders", "Журнал",
+      actionButton("tab_deals", "Решения",
+                   class = if (identical(right_tab(), "deals")) "on" else NULL),
+      actionButton("tab_orders", "Поручения",
                    class = if (identical(right_tab(), "orders")) "on" else NULL)
     )
-    if (identical(right_tab(), "orders")) {
+    if (identical(right_tab(), "deals")) {
       return(panel(
         "Журнал решений",
         sub = textOutput("ord_sub", inline = TRUE),
-        tip = paste0(
-          "ЖУРНАЛ РЕШЕНИЙ: каждая покупка отдельной строкой от входа до ",
-          "выхода — дата и цена покупки, дата и цена продажи, вложено, ",
-          "выручено, результат в деньгах и процентах. Пока бумага не продана, ",
-          "клетки продажи пусты, а результат считается по текущей цене. ",
-          "Продажи сопоставляются с покупками по правилу «первой закрывается ",
-          "самая старая» (FIFO): так «продал три штуки» означает понятное ",
-          "«закрылись три самые старые», а не долю от средней. Поэтому ",
-          "докупка НЕ усредняет историю: два решения по одной бумаге видны ",
-          "двумя строками, и по каждому видно, удачным оно было или нет. ",
-          "Сюда попадают и сделки, совершённые в приложении брокера; ",
-          "пометкой «стенд» отмечены те, что приняты здесь. Прежний список ",
-          "поручений (что именно отправил стенд и что ответил брокер) ",
-          "сколько — и ЧТО ИЗ ЭТОГО ВЫШЛО у брокера. Вторая половина важнее ",
-          "первой: 06.10.2026 окно подтверждения показывало GOOGL, а на счёт ",
-          "ушла покупка 3 акций AMD по $649.03, и заметить это было негде — ",
-          "журнал лежал файлом в хранилище и на экран не выводился вовсе, а ",
-          "остался и сверяется с брокером при открытии журнала."),
+        tip = tip_block(
+          "Каждая покупка — отдельной строкой от входа до выхода.",
+          list("Что в строке", "дата и цена покупки, дата и цена продажи, вложено, выручено, результат в деньгах и процентах, срок держания"),
+          list("Пока не продано", "клетки продажи пусты, результат считается по текущей цене"),
+          list("Докупка не усредняет", "два решения по одной бумаге — две строки, по каждой видно, удачным оно было"),
+          list("FIFO", "продажа закрывает самые старые покупки: «продал три» = «закрылись три самые старые»"),
+          list("Пометка «стенд»", "решение принято здесь; остальные сделаны в приложении брокера"),
+          list("Полоса слева", sprintf("порог фиксации по годовой доходности: ±%g%%", BLNR_SIGNAL_ANNUAL_PCT)),
+          note = "Поручения стенда и ответы брокера — в соседней вкладке «Поручения»."),
+        right = tabs,
+        body_class = "bd--flush",
+        tags$div(class = "wl", tags$div(class = "wl-list", uiOutput("ord_table")))
+      ))
+    }
+
+    if (identical(right_tab(), "orders")) {
+      can_trade <- user_can_trade(USER$login) && exante_has_credentials() &&
+                   identical(sel_date(), fact_date())
+      return(panel(
+        "Журнал поручений",
+        sub = textOutput("ord_orders_sub", inline = TRUE),
+        tip = tip_block(
+          "Что стенд отправил брокеру и что тот ответил.",
+          list("Зачем отдельно от решений", "отвечает не «удачной ли была покупка», а «то ли купилось, что я нажал»"),
+          list("Исполнение", "по каждому поручению видно, сколько и почём реально прошло у брокера"),
+          list("Отмена", "крестик у неисполненного поручения снимает его; исполненную сделку отменить нельзя"),
+          note = "06.10.2026 окно показывало GOOGL, а на счёт ушёл AMD — заметить это можно только здесь. Сделки из приложения брокера сюда не попадают."),
         right = tabs,
         body_class = "bd--flush",
         tags$div(class = "wl",
-          tags$div(class = "ord-switch",
-            tags$div(class = "seg sm",
-              actionButton("ord_tab_deals", "Решения",
-                           title = "Сделки: каждая покупка от входа до выхода",
-                           class = if (identical(ord_view(), "deals")) "on" else NULL),
-              actionButton("ord_tab_orders", "Поручения",
-                           title = "Что стенд отправил брокеру и что тот ответил",
-                           class = if (identical(ord_view(), "orders")) "on" else NULL))),
-          tags$div(class = "wl-list", uiOutput("ord_table")))
+          if (can_trade) tags$div(class = "ord-add",
+            actionButton("buy_open2", "+ Новое поручение", class = "btn-buy")),
+          tags$div(class = "wl-list", uiOutput("ord_orders_table")))
       ))
     }
 
@@ -1381,19 +1379,23 @@ shinyServer(function(input, output, session) {
     }
     panel(
       "График инструмента",
-      tip = paste(
-        "Дневные свечи за", BLNR_TIMELINE_DAYS, "торговых сессий —",
-        "та же глубина, что у шкалы времени. Пунктир — траектория цены по",
-        "модели от базы прогноза; горизонталь — цена входа, если бумага в",
-        "портфеле; ромбы — сделки по ней; вертикаль — выбранная дата."
-      ),
-      right = tags$div(
-        style = "display:flex;gap:8px;align-items:center",
-        tags$div(style = "width:230px", uiOutput("sel_ticker_ui")),
-        tabs
-      ),
+      tip = tip_block(
+        sprintf("Дневные свечи за %d торговых сессий.", BLNR_TIMELINE_DAYS),
+        list("Треугольник вверх", "покупка этой бумаги"),
+        list("Треугольник вниз", "продажа"),
+        list("Пунктирная линия", "траектория цены по модели от базы прогноза"),
+        list("Горизонталь", "цена входа, если бумага в портфеле"),
+        list("Вертикаль", "выбранная дата"),
+        note = "Наведите на маркер сделки — количество, цена и сумма."),
+      right = tabs,
       body_class = "bd--plot",
-      plotlyOutput("chart_instrument", height = "100%")
+      # Селектор инструмента ПОВЕРХ графика, а не в шапке: в шапке он был узкой
+      # коробкой «AMD · AMD», по которой не прочитать ни цену, ни результат.
+      # Здесь он широкий и информативный — тикер, название, количество, цена,
+      # результат — и стоит над самим графиком, к которому относится.
+      tags$div(class = "chart-wrap",
+        tags$div(class = "chart-sel", uiOutput("sel_ticker_ui")),
+        plotlyOutput("chart_instrument", height = "100%"))
     )
   })
 
@@ -1401,14 +1403,28 @@ shinyServer(function(input, output, session) {
   # и список в разметке устарел бы сразу после первого добавления.
   output$sel_ticker_ui <- renderUI({
     wl <- watchlist_active()
+    m <- portfolio_metrics()
     held <- portfolio_prices()$ticker
     sel <- isolate(input$sel_ticker)
     if (is.null(sel) || !(sel %in% wl$ticker)) {
       sel <- if (length(held) && held[1] %in% wl$ticker) held[1] else wl$ticker[1]
     }
+    # Подпись несёт то, ради чего на график и смотрят: цену, количество,
+    # результат. Для бумаги вне портфеля — только цена. selectInput рисует
+    # подписи простым текстом, поэтому проценты и цена идут текстом же.
+    lbl <- vapply(wl$ticker, function(tk) {
+      r <- m[ticker == tk]
+      px <- if (nrow(r)) r$current_price[1] else md_last_price(tk)
+      part <- paste0(tk, " \u00b7 ", wl$name_ru[wl$ticker == tk][1])
+      if (is.finite(px)) part <- paste0(part, "  \u00b7  ", fmt_money(px, 2))
+      if (nrow(r) && r$quantity_at[1] > 0) {
+        part <- paste0(part, "  \u00b7  ", formatC(r$quantity_at[1], format = "d"),
+                       " шт  \u00b7  ", fmt_pct(r$growth_pct[1]))
+      }
+      part
+    }, character(1))
     selectInput("sel_ticker", NULL, width = "100%",
-                choices = stats::setNames(as.list(wl$ticker),
-                                          paste0(wl$ticker, " \u00b7 ", wl$name_ru)),
+                choices = stats::setNames(as.list(wl$ticker), lbl),
                 selected = sel)
   })
 
@@ -1435,72 +1451,25 @@ shinyServer(function(input, output, session) {
   })
 
   output$ord_sub <- renderText({
-    if (identical(ord_view(), "orders")) {
-      o <- tryCatch(orders_now(), error = function(e) orders_empty())
-      return(if (nrow(o) == 0) "поручений нет"
-             else sprintf("%d со стенда", nrow(o)))
-    }
     l <- lots_now()
     if (nrow(l) == 0) return("сделок нет")
     sprintf("%d сделок \u00b7 открыто %d", nrow(l), sum(l$open))
   })
 
-  # Журнал ПОРУЧЕНИЙ: что ушло со стенда и что ответил брокер. Он остаётся
-  # отдельно от журнала решений, потому что отвечает на другой вопрос — не
-  # «удачной ли была покупка», а «то ли купилось, что я нажал».
-  ord_orders_ui <- function() {
+  output$ord_orders_sub <- renderText({
     o <- tryCatch(orders_now(), error = function(e) orders_empty())
-    if (nrow(o) == 0) {
-      return(empty_state(
-        "Со стенда поручений ещё не отправляли. Сделки, сделанные в ",
-        "приложении брокера, сюда не попадают — они во вкладке «Решения»."))
-    }
-    rows <- lapply(seq_len(nrow(o)), function(i) {
-      r <- o[i]
-      filled <- is.finite(r$filled_qty) && r$filled_qty > 0
-      mismatch <- filled && is.finite(r$quantity) && r$filled_qty != r$quantity
-      tags$tr(
-        class = if (identical(r$status, "отказ")) "wl-row--off" else NULL,
-        tags$td(class = "mut", format(r$at, "%d.%m %H:%M")),
-        tags$td(tags$b(r$symbol),
-                tags$span(class = "wl-src",
-                          if (identical(r$side, "buy")) "покупка" else "продажа")),
-        tags$td(class = "r", formatC(r$quantity, format = "d")),
-        tags$td(class = if (filled) "pos" else "mut",
-                orders_outcome_text(r),
-                if (mismatch) tags$span(class = "neg",
-                  sprintf(" \u00b7 заказано %g", r$quantity))),
-        tags$td(class = "mut", r$user),
-        # ОТМЕНА — только у неисполненного и только владельцу счёта. У
-        # исполненной сделки отменять нечего, и кнопка над ней обещала бы
-        # невозможное.
-        tags$td(class = "r",
-          if (orders_cancellable(r) && user_can_trade(USER$login))
-            tags$button(class = "tr-btn sell",
-              title = sprintf(paste0("Отменить неисполненное поручение: %s %g шт. ",
-                                     "Отменяется только то, что ещё не исполнилось."),
-                              r$symbol, r$quantity),
-              onclick = sprintf(
-                "Shiny.setInputValue('order_cancel','%s',{priority:'event'})", r$order_id),
-              "\u00d7")
-          else tags$span(class = "mut", "\u2014")))
-    })
-    tags$table(
-      tags$thead(tags$tr(tags$th("Когда"), tags$th("Бумага"),
-                         tags$th(class = "r", "Заказано"),
-                         tags$th("Исполнено"), tags$th("Кто"),
-                         tags$th(class = "r", ""))),
-      tags$tbody(rows))
-  }
+    if (nrow(o) == 0) return("поручений нет")
+    np <- sum(vapply(seq_len(nrow(o)), function(i) orders_cancellable(o[i]), logical(1)))
+    sprintf("%d со стенда%s", nrow(o),
+            if (np > 0) sprintf(" \u00b7 %d в очереди", np) else "")
+  })
 
+  # Журнал решений (сделки).
   output$ord_table <- renderUI({
-    if (identical(ord_view(), "orders")) return(ord_orders_ui())
     l <- lots_now()
     if (nrow(l) == 0) {
       return(empty_state("Сделок по счёту ещё нет."))
     }
-    # Поручения стенда — чтобы отметить, какое решение принято здесь, а какое
-    # в приложении брокера. Связь по orderId реестра операций.
     placed <- tryCatch(orders_now(), error = function(e) orders_empty())
     from_stand <- if (nrow(placed) > 0) placed$order_id[!is.na(placed$order_id)] else character()
 
@@ -1509,26 +1478,28 @@ shinyServer(function(input, output, session) {
     rows <- lapply(seq_len(nrow(l)), function(i) {
       r <- l[i]
       tone <- if (!is.finite(r$pnl)) "mut" else if (r$pnl >= 0) "pos" else "neg"
+      # Сигнал — только у ОТКРЫТЫХ сделок: закрытую уже зафиксировали, порог
+      # ей предлагать нечего. См. R/signals.R.
+      sig <- if (r$open) fixation_signal(r$pnl_pct, held[i]) else ""
       tags$tr(
-        class = if (r$open) NULL else "wl-row--off",
+        class = paste(if (!r$open) "wl-row--off",
+                      switch(sig, take_profit = "sig-tp", cut_loss = "sig-cl", "")),
+        title = if (nzchar(sig)) signal_text(sig, r$pnl_pct, held[i]) else NULL,
         tags$td(tags$b(r$ticker),
                 if (r$order_id %in% from_stand)
-                  tags$span(class = "wl-src", title = "решение принято на стенде", "стенд")),
+                  tags$span(class = "wl-src", title = "решение принято на стенде", "стенд"),
+                if (nzchar(sig)) tags$span(
+                  class = paste("sig-dot", if (sig == "take_profit") "tp" else "cl"),
+                  title = signal_text(sig, r$pnl_pct, held[i]),
+                  if (sig == "take_profit") "▲" else "▼")),
         tags$td(class = "r", formatC(r$qty, format = "d")),
-        # ВХОД: дата и цена — то, что было решено.
         tags$td(class = "mut", format(r$open_date, "%d.%m.%y")),
         tags$td(class = "r", money(r$open_price, 2)),
         tags$td(class = "r", money(r$cost)),
-        # ВЫХОД: пусто, пока сделка открыта. Место под дату продажи оставлено
-        # сознательно — по пустой клетке видно, что решение ещё не закрыто.
         tags$td(class = "mut",
                 if (is.na(r$close_date)) tags$span(class = "faint", "\u2014")
                 else format(r$close_date, "%d.%m.%y")),
         tags$td(class = "r", money(r$close_price, 2)),
-        # Сумма продажи — только у ЗАКРЫТОЙ сделки. У открытой здесь было
-        # текущее состояние позиции, и строка читалась как «продано за
-        # столько-то», хотя бумага на счёте. Текущая стоимость живёт в своей
-        # колонке «Сейчас».
         tags$td(class = "r", if (r$open) tags$span(class = "faint", "\u2014")
                              else money(r$proceeds)),
         tags$td(class = "r", if (r$open) money(r$proceeds)
@@ -1559,6 +1530,67 @@ shinyServer(function(input, output, session) {
           tags$th("Срок"))),
       tags$tbody(rows)
     )
+  })
+
+  # Журнал поручений: что ушло со стенда и что ответил брокер.
+  output$ord_orders_table <- renderUI({
+    o <- tryCatch(orders_now(), error = function(e) orders_empty())
+    if (nrow(o) == 0) {
+      return(empty_state(
+        "Со стенда поручений ещё не отправляли. Сделки, сделанные в ",
+        "приложении брокера, сюда не попадают — они во вкладке «Решения»."))
+    }
+    money <- function(x, d = 0) if (is.finite(x)) fmt_money(x, d) else "\u2014"
+    rows <- lapply(seq_len(nrow(o)), function(i) {
+      r <- o[i]
+      filled <- is.finite(r$filled_qty) && r$filled_qty > 0
+      mismatch <- filled && is.finite(r$quantity) && r$filled_qty != r$quantity
+      # ЦЕНА и СУММА размещённого ордера. Поручение рыночное, своей цены у него
+      # нет: пока не исполнено — показываем ОЦЕНКУ по последней известной цене
+      # (помечена «≈»), после исполнения — фактическую цену и сумму сделки.
+      est_px <- md_last_price(exante_symbol_to_ticker(r$symbol))
+      if (filled) {
+        px <- r$fill_price; amt <- r$fill_price * r$filled_qty; approx <- FALSE
+      } else {
+        px <- est_px; amt <- if (is.finite(est_px)) est_px * r$quantity else NA_real_
+        approx <- TRUE
+      }
+      tags$tr(
+        class = if (identical(r$status, "отказ")) "wl-row--off" else NULL,
+        tags$td(class = "mut", format(r$at, "%d.%m %H:%M")),
+        tags$td(tags$b(r$symbol),
+                tags$span(class = "wl-src",
+                          if (identical(r$side, "buy")) "покупка" else "продажа")),
+        tags$td(class = "r", formatC(r$quantity, format = "d")),
+        tags$td(class = "r", if (is.finite(px))
+                  paste0(if (approx) "\u2248" else "", money(px, 2)) else "\u2014"),
+        tags$td(class = "r", if (is.finite(amt))
+                  paste0(if (approx) "\u2248" else "", money(amt)) else "\u2014"),
+        tags$td(class = if (filled) "pos" else "mut",
+                orders_outcome_text(r),
+                if (mismatch) tags$span(class = "neg",
+                  sprintf(" \u00b7 заказано %g", r$quantity))),
+        tags$td(class = "mut", r$user),
+        tags$td(class = "r",
+          if (orders_cancellable(r) && user_can_trade(USER$login))
+            tags$button(class = "tr-btn sell",
+              title = sprintf(paste0("Отменить неисполненное поручение: %s %g шт. ",
+                                     "Отменяется только то, что ещё не исполнилось."),
+                              r$symbol, r$quantity),
+              onclick = sprintf(
+                "Shiny.setInputValue('order_cancel','%s',{priority:'event'})", r$order_id),
+              "\u00d7")
+          else tags$span(class = "mut", "\u2014")))
+    })
+    tags$table(
+      tags$thead(tags$tr(
+        tags$th("Когда"), tags$th("Бумага"),
+        tags$th(class = "r", "Кол-во"),
+        tags$th(class = "r", "Цена"),
+        tags$th(class = "r", "Сумма"),
+        tags$th("Исполнено"), tags$th("Кто"),
+        tags$th(class = "r", ""))),
+      tags$tbody(rows))
   })
 
   # --- справочник ----------------------------------------------------------
@@ -1763,24 +1795,43 @@ shinyServer(function(input, output, session) {
       }
     }
 
-    # Сделки по этой бумаге: где вошли и где вышли. Без них график — просто
-    # картинка цены, по которой не видно, что владелец с ней делал.
+    # Сделки по этой бумаге: где вошли и где вышли. Отмечаются по ДАТЕ СДЕЛКИ
+    # (trade_date), а не по дате расчётов: иначе вчерашняя покупка с расчётами
+    # «завтра» уезжала за край свечей и маркер пропадал (поймано владельцем
+    # 07.10.2026 — вчерашняя покупка AMD не показывалась).
+    #
+    # ПОКУПКА и ПРОДАЖА — РАЗНЫМИ символами, не только цветом: треугольник
+    # вверх (вошёл) и треугольник вниз (вышел) читаются даже без цвета, а два
+    # ромба одного вида различались только оттенком.
     ev <- ledger_events(ledger_now())
     ev <- ev[exante_symbol_to_ticker(symbol) == tk &
-             value_date >= min(cnd$date) & value_date <= max(cnd$date)]
+             trade_date >= min(cnd$date) & trade_date <= max(cnd$date)]
     if (nrow(ev) > 0) {
-      ev[, side := data.table::fifelse(qty >= 0, "покупка", "продажа")]
-      p <- add_trace(
-        p, data = ev, x = ~value_date, y = ~price, inherit = FALSE,
-        type = "scatter", mode = "markers", name = "сделки",
-        marker = list(
-          size = 11, symbol = "diamond",
-          color = ifelse(ev$qty >= 0, BLNR_COLORS$ok, BLNR_COLORS$bad),
-          line = list(color = "#fff", width = 1.5)),
-        hovertext = sprintf("%s %s %g \u00b7 $%s",
-                            format(ev$value_date, "%d.%m.%Y"), ev$side,
-                            abs(ev$qty), formatC(ev$price, format = "f", digits = 2)),
-        hoverinfo = "text")
+      ev[, side := data.table::fifelse(qty >= 0, "Покупка", "Продажа")]
+      # Тултип — СТРУКТУРА, а не строка в строку: заголовок события, затем
+      # количество, цена и сумма по полкам. Разметку plotly понимает в HTML.
+      ev[, htxt := sprintf(paste0(
+        "<b>%s \u00b7 %s</b><br>",
+        "дата сделки: %s<br>",
+        "количество: %g шт.<br>",
+        "цена: $%s<br>",
+        "сумма: $%s"),
+        side, tk, format(trade_date, "%d.%m.%Y"), abs(qty),
+        formatC(price, format = "f", digits = 2, big.mark = " "),
+        formatC(abs(qty) * price, format = "f", digits = 0, big.mark = " "))]
+      buys <- ev[qty >= 0]; sells <- ev[qty < 0]
+      if (nrow(buys) > 0) p <- add_trace(
+        p, data = buys, x = ~trade_date, y = ~price, inherit = FALSE,
+        type = "scatter", mode = "markers", name = "Покупка",
+        marker = list(size = 13, symbol = "triangle-up",
+          color = BLNR_COLORS$ok, line = list(color = "#fff", width = 1.5)),
+        hovertext = ~htxt, hoverinfo = "text")
+      if (nrow(sells) > 0) p <- add_trace(
+        p, data = sells, x = ~trade_date, y = ~price, inherit = FALSE,
+        type = "scatter", mode = "markers", name = "Продажа",
+        marker = list(size = 13, symbol = "triangle-down",
+          color = BLNR_COLORS$bad, line = list(color = "#fff", width = 1.5)),
+        hovertext = ~htxt, hoverinfo = "text")
     }
 
     shapes <- list(
@@ -1876,22 +1927,17 @@ shinyServer(function(input, output, session) {
                          class = if (identical(value_scope(), "window")) "on" else NULL)
           )
         }),
-        tip = paste0(
-          "Стоимость бумаг, денежный остаток и итог по счёту на каждую ",
-          "торговую сессию окна. Считается из истории операций Exante, а не ",
-          "из ежедневных снимков стенда: снимки начинаются со дня первого ",
-          "запуска, а история счёта известна целиком. Кнопки справа ",
-          "переключают отрезок: «весь срок» — с первой операции по счёту, ",
-          "«шкала» — тот же отрезок, что на шкале времени вверху. Глубина ",
-          "всего срока ограничена хранилищем рядов цен. Разрыв значит, что на этих ",
-          "сессиях в портфеле была бумага, которую нечем оценить — ",
-          "занижать стоимость молча нельзя",
-          if (length(unp))
-            paste0("; сейчас это ", length(unp), ": ",
-                   paste(utils::head(unp, 4), collapse = ", "),
-                   if (length(unp) > 4) " и другие" else "")
-          else "",
-          ". Вертикальная линия — выбранная дата."),
+        tip = tip_block(
+          "Стоимость бумаг, кэш и итог по счёту на каждую сессию.",
+          list("Итого", "жирная линия — бумаги плюс кэш"),
+          list("Отрезок", "«весь срок» — с первой операции; «шкала» — окно шкалы времени вверху"),
+          list("Разрыв", "на этих сессиях была бумага, которую нечем оценить — занижать стоимость молча нельзя"),
+          list("Вертикаль", "выбранная дата"),
+          note = paste0(
+            "Считается из истории операций Exante, а не из снимков стенда: снимки начались бы со дня запуска, а история счёта известна целиком.",
+            if (length(unp))
+              paste0(" Сейчас не оценить: ", paste(utils::head(unp, 4), collapse = ", "),
+                     if (length(unp) > 4) " и другие" else "") else "")),
         body_class = "bd--plot",
         plotlyOutput("chart_value", height = "100%")
       )))
@@ -1900,16 +1946,12 @@ shinyServer(function(input, output, session) {
       items <- c(items, list(panel(
         "Результат против модели",
         sub = "прибыль и убыток, $",
-        tip = paste0(
-          "По каждой сессии: сколько ФАКТИЧЕСКИ заработали или потеряли на ",
-          "открытых позициях и сколько обещала модель за тот же срок ",
-          "владения. Третья линия — разница. ",
-          "Показано в деньгах сознательно: в процентах это была доходность ",
-          "вложенного в бумаги, и одна акция IBM за $285 своим падением на ",
-          "20% рисовала «портфель −20%», хотя на счёте лежало ещё $45 тысяч ",
-          "наличными. Денежная часть счёта в этот расчёт не входит — она ни ",
-          "растёт, ни падает. Прогноз приводится к дате последней покупки ",
-          "каждой бумаги."),
+        tip = tip_block(
+          "По сессиям: заработали против того, что обещала модель.",
+          list("Факт", "сколько реально заработали или потеряли на открытых позициях"),
+          list("Модель", "сколько обещала за тот же срок владения"),
+          list("Разница", "факт минус модель"),
+          note = "В деньгах, а не в процентах: падение одной акции IBM на 20% рисовало бы «портфель −20%» при $45 тыс. наличными. Кэш в расчёт не входит — он не растёт и не падает."),
         body_class = "bd--plot",
         plotlyOutput("chart_deviation", height = "100%")
       )))
