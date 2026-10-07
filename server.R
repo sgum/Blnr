@@ -739,7 +739,10 @@ shinyServer(function(input, output, session) {
         "за ТОТ ЖЕ период владения: накопленный прогноз приведён к дате ",
         "покупки, иначе бумага, купленная позже базы прогноза, присвоила бы ",
         "себе движение цены за время, когда её не было. Δ = факт − модель в ",
-        "процентных пунктах. «Куплено» — дата последней покупки и срок ",
+        "процентных пунктах. ОДНА СТРОКА — ОДНО РЕШЕНИЕ: покупки одной бумаги ",
+        "не усредняются, у каждой свои цена входа, срок и результат; ",
+        "продать можно только количество, пакетов у брокера нет, и продажа ",
+        "закрывает самые старые покупки. «Куплено» — дата покупки и срок ",
         "владения НА ВЫБРАННУЮ ДАТУ (сдвиньте ползунок — срок вырастет): ",
         "именно от этой даты отсчитываются и результат, и прогноз, ",
         "потому что докупка меняет позицию. При нулевом сроке владения в ",
@@ -834,95 +837,89 @@ shinyServer(function(input, output, session) {
               if (is.finite(x)) formatC(x, format = "f", digits = digits, big.mark = " ") else "—")
     }
 
-    # ОТДЕЛЬНАЯ СТРОКА НА КАЖДУЮ ПОКУПКУ. Докупка усредняет цену входа, и два
-    # решения по одной бумаге — сентябрьское удачное и октябрьское неудачное —
-    # сливаются в одну строку со средней ценой, по которой не видно ни одного.
-    # Поэтому под строкой бумаги показываются её лоты: у каждого своя дата,
-    # своя цена входа и свой результат ОТ СВОЕЙ даты.
+    # ОДНА СТРОКА — ОДНО РЕШЕНИЕ. Таблица больше не усредняет покупки: AMD,
+    # купленный в сентябре, и AMD, купленный вчера, — это два разных решения с
+    # разной ценой входа, разным сроком и разным результатом. Пока они стояли
+    # одной строкой со средней ценой, не было видно ни одного из них.
     #
-    # Только когда покупок больше одной: у единственной покупки строка бумаги
-    # и есть эта покупка, и дублировать её значит тратить высоту экрана зря.
+    # Бумага показывается один раз на группу, повторы приглушены: это та же
+    # бумага, а не новая позиция.
     open_lots <- tryCatch(lots_open(lots_now()), error = function(e) lots_empty())
-    lot_days <- if (nrow(open_lots) > 0) lots_held_days(open_lots, as_of = sel_date()) else integer()
+    fd <- forecast_data()
+    total_val <- suppressWarnings(portfolio_summary()$total_value)
 
-    lot_rows <- function(tk, price_now) {
-      if (nrow(open_lots) == 0) return(NULL)
-      idx <- which(open_lots$ticker == tk)
-      if (length(idx) < 2L) return(NULL)
-      idx <- idx[order(open_lots$open_date[idx])]
-      lapply(idx, function(j) {
-        L <- open_lots[j]
-        val <- if (is.finite(price_now)) price_now * L$qty else NA_real_
-        gr <- if (is.finite(price_now) && is.finite(L$open_price) && L$open_price > 0)
-                (price_now / L$open_price - 1) * 100 else NA_real_
+    if (nrow(open_lots) == 0) {
+      rows <- list()
+    } else {
+      data.table::setorder(open_lots, ticker, open_date)
+      held_days <- lots_held_days(open_lots, as_of = sel_date())
+      rows <- lapply(seq_len(nrow(open_lots)), function(i) {
+        L <- open_lots[i]
+        mrow <- m[ticker == L$ticker]
+        px <- if (nrow(mrow)) mrow$current_price[1] else NA_real_
+        day_pct <- if (nrow(mrow)) mrow$day_change_pct[1] else NA_real_
+        val <- if (is.finite(px)) px * L$qty else NA_real_
+        gr <- if (is.finite(px) && is.finite(L$open_price) && L$open_price > 0)
+                (px / L$open_price - 1) * 100 else NA_real_
+        wt <- if (is.finite(val) && is.finite(total_val) && total_val > 0)
+                val / total_val * 100 else NA_real_
+        # Модель сравнивается ОТ ДАТЫ ЭТОЙ ПОКУПКИ: у каждого решения свой
+        # период владения, и мерить их общим отрезком значит приписывать
+        # вчерашней покупке месячный прогноз.
+        fpct <- if (!is.null(fd) && nrow(fd) > 0)
+                  forecast_between(fd, L$ticker, L$open_date, sel_date()) else NA_real_
+        gap <- if (!is.finite(fpct) && !is.null(fd) && nrow(fd) > 0)
+                 forecast_gap_reason(fd, L$ticker, L$open_date, sel_date()) else NULL
+        first_of_group <- i == 1L || open_lots$ticker[i - 1L] != L$ticker
+        # ИМЯ РЕШЕНИЯ, а не бумаги. Две покупки AMD — это две разные строки, и
+        # называться одинаково они не могут: иначе по имени не сказать, о
+        # какой из них речь («что там с AMD?» перестаёт быть вопросом с
+        # ответом). Дата покупки и есть естественное имя решения. У бумаги с
+        # единственной покупкой суффикс не нужен — он только шумит.
+        multi <- sum(open_lots$ticker == L$ticker) > 1L
         tags$tr(
-          class = "lot",
-          onclick = sprintf("Shiny.setInputValue('pick_ticker','%s',{priority:'event'})", tk),
-          tags$td(class = "nm", tags$span(class = "lot-mark", "\u2514"),
-                  format(L$open_date, "%d.%m.%y")),
+          class = paste(if (identical(L$ticker, sel)) "sel",
+                        if (!first_of_group) "lot-more"),
+          onclick = sprintf("Shiny.setInputValue('pick_ticker','%s',{priority:'event'})", L$ticker),
+          tags$td(class = "nm", L$ticker,
+                  if (multi) tags$span(class = "lot-tag",
+                                       format(L$open_date, "\u00b7 %d.%m"))),
           tags$td(formatC(L$qty, format = "d")),
-          plain(L$open_price), plain(price_now),
-          tags$td(),
+          plain(L$open_price), plain(px),
+          num(day_pct, fmt_pct),
           plain(L$cost, 0), plain(val, 0),
-          tags$td(),
+          tags$td(style = sprintf(
+            "background:linear-gradient(to left,#ffeccc %1$.1f%%,transparent %1$.1f%%)",
+            max(0, min(100, if (is.finite(wt)) wt else 0))),
+            if (is.finite(wt)) sprintf("%.1f %%", wt) else "\u2014"),
           num(gr, fmt_pct),
-          if (has_fc) tags$td(), if (has_fc) tags$td(),
-          tags$td(class = "mut", sprintf("держу %d дн", lot_days[j])),
-          tags$td()
+          if (has_fc) {
+            if (is.finite(fpct)) num(fpct, fmt_pct)
+            else tags$td(class = "mut", style = "font-size:10.5px", gap %||% "\u2014")
+          },
+          if (has_fc) num(if (is.finite(fpct) && is.finite(gr)) gr - fpct else NA_real_, fmt_pp),
+          tags$td(class = "mut", sprintf(
+            "%s \u00b7 %s", format(L$open_date, "%d.%m.%y"),
+            if (held_days[i] == 0L) "в этот день" else sprintf("%d дн", held_days[i]))),
+          # Продать можно только количество, а НЕ конкретный пакет: у брокера
+          # лотов нет. Кнопка продаёт столько же штук, сколько в этом решении,
+          # и закрывает при этом самые старые покупки (FIFO) — об этом прямо
+          # сказано под курсором, чтобы кнопка не обещала больше, чем делает.
+          tags$td(class = "r",
+            if (can_trade)
+              tags$button(class = "tr-btn sell",
+                title = sprintf(paste0("Продать %g шт. %s. У брокера пакетов нет: ",
+                                       "уйдёт поручение на это количество, а в учёте ",
+                                       "закроются самые старые покупки."),
+                                L$qty, L$ticker),
+                onclick = sprintf(
+                  "event.stopPropagation();Shiny.setInputValue('trade_open','sell|%s',{priority:'event'})",
+                  L$ticker),
+                "\u2212")
+            else tags$span(class = "mut", "\u2014"))
         )
       })
     }
-
-    rows <- lapply(seq_len(nrow(m)), function(i) {
-      r <- m[i]
-      tagList(tags$tr(
-        class = if (identical(r$ticker, sel)) "sel" else NULL,
-        onclick = sprintf("Shiny.setInputValue('pick_ticker','%s',{priority:'event'})", r$ticker),
-        tags$td(class = "nm", r$ticker),
-        tags$td(formatC(r$quantity_at, format = "d")),
-        plain(r$entry_price), plain(r$current_price),
-        num(r$day_change_pct, fmt_pct),
-        plain(r$entry_value, 0),
-        plain(r$current_value, 0),
-        # Вес — числом и заливкой ячейки: отдельная карточка «Структура
-        # портфеля» ради тех же пяти чисел заняла бы полосу экрана.
-        tags$td(
-          style = sprintf(
-            "background:linear-gradient(to left,#ffeccc %1$.1f%%,transparent %1$.1f%%)",
-            max(0, min(100, r$weight_pct))),
-          formatC(r$weight_pct, format = "f", digits = 1), "%"),
-        num(r$growth_pct, fmt_pct),
-        if (has_fc) {
-          if (is.finite(r$forecast_since_entry_pct)) num(r$forecast_since_entry_pct, fmt_pct)
-          else tags$td(class = "mut", style = "font-size:10.5px",
-                       r$model_gap %||% "\u2014")
-        },
-        if (has_fc) num(r$dev_since_entry_pp, fmt_pp),
-        tags$td(class = "mut",
-                if (is.na(r$last_buy_date)) "\u2014"
-                else {
-                  # Срок считается НА ВЫБРАННУЮ ДАТУ. Ноль означает «куплено в
-                  # ту самую сессию, которую смотрим», а не ошибку — поэтому
-                  # словами, а не цифрой: «0 дн» рядом с датой двухдневной
-                  # давности читается как сбой.
-                  n <- as.integer(sel_date() - r$last_buy_date)
-                  lbl <- if (is.na(n)) "\u2014"
-                         else if (n == 0) "в этот день"
-                         else sprintf("%d дн", n)
-                  sprintf("%s \u00b7 %s", format(r$last_buy_date, "%d.%m.%y"), lbl)
-                }),
-        # Продажа только на фактической дате: торговать «на прошлую сессию»
-        # нельзя, а кнопка на ней читалась бы как рабочая.
-        tags$td(class = "r",
-          if (can_trade)
-            tags$button(class = "tr-btn sell", title = paste("Продать", r$ticker),
-              onclick = sprintf(
-                "event.stopPropagation();Shiny.setInputValue('trade_open','sell|%s',{priority:'event'})",
-                r$ticker),
-              "\u2212")
-          else tags$span(class = "mut", "\u2014"))
-      ), lot_rows(r$ticker, r$current_price))
-    })
 
     s <- portfolio_summary()
     vf <- portfolio_vs_model()
@@ -1231,6 +1228,13 @@ shinyServer(function(input, output, session) {
   observeEvent(input$tab_chart, right_tab("chart"))
   observeEvent(input$tab_registry, right_tab("registry"))
   observeEvent(input$tab_orders, right_tab("orders"))
+  # Два журнала рядом, а не вместо друг друга. Решения отвечают «удачной ли
+  # была покупка», поручения — «что именно стенд отправил брокеру и что тот
+  # ответил». Второе нужно, когда расходятся намерение и результат: ровно так
+  # 06.10.2026 обнаружилось, что окно показывало GOOGL, а ушёл AMD.
+  ord_view <- reactiveVal("deals")
+  observeEvent(input$ord_tab_deals, ord_view("deals"))
+  observeEvent(input$ord_tab_orders, ord_view("orders"))
 
   output$right_col <- renderUI({
     tabs <- tags$div(
@@ -1266,7 +1270,16 @@ shinyServer(function(input, output, session) {
           "остался и сверяется с брокером при открытии журнала."),
         right = tabs,
         body_class = "bd--flush",
-        tags$div(class = "wl", tags$div(class = "wl-list", uiOutput("ord_table")))
+        tags$div(class = "wl",
+          tags$div(class = "ord-switch",
+            tags$div(class = "seg sm",
+              actionButton("ord_tab_deals", "Решения",
+                           title = "Сделки: каждая покупка от входа до выхода",
+                           class = if (identical(ord_view(), "deals")) "on" else NULL),
+              actionButton("ord_tab_orders", "Поручения",
+                           title = "Что стенд отправил брокеру и что тот ответил",
+                           class = if (identical(ord_view(), "orders")) "on" else NULL))),
+          tags$div(class = "wl-list", uiOutput("ord_table")))
       ))
     }
 
@@ -1357,12 +1370,52 @@ shinyServer(function(input, output, session) {
   })
 
   output$ord_sub <- renderText({
+    if (identical(ord_view(), "orders")) {
+      o <- tryCatch(orders_now(), error = function(e) orders_empty())
+      return(if (nrow(o) == 0) "поручений нет"
+             else sprintf("%d со стенда", nrow(o)))
+    }
     l <- lots_now()
     if (nrow(l) == 0) return("сделок нет")
     sprintf("%d сделок \u00b7 открыто %d", nrow(l), sum(l$open))
   })
 
+  # Журнал ПОРУЧЕНИЙ: что ушло со стенда и что ответил брокер. Он остаётся
+  # отдельно от журнала решений, потому что отвечает на другой вопрос — не
+  # «удачной ли была покупка», а «то ли купилось, что я нажал».
+  ord_orders_ui <- function() {
+    o <- tryCatch(orders_now(), error = function(e) orders_empty())
+    if (nrow(o) == 0) {
+      return(empty_state(
+        "Со стенда поручений ещё не отправляли. Сделки, сделанные в ",
+        "приложении брокера, сюда не попадают — они во вкладке «Решения»."))
+    }
+    rows <- lapply(seq_len(nrow(o)), function(i) {
+      r <- o[i]
+      filled <- is.finite(r$filled_qty) && r$filled_qty > 0
+      mismatch <- filled && is.finite(r$quantity) && r$filled_qty != r$quantity
+      tags$tr(
+        class = if (identical(r$status, "отказ")) "wl-row--off" else NULL,
+        tags$td(class = "mut", format(r$at, "%d.%m %H:%M")),
+        tags$td(tags$b(r$symbol),
+                tags$span(class = "wl-src",
+                          if (identical(r$side, "buy")) "покупка" else "продажа")),
+        tags$td(class = "r", formatC(r$quantity, format = "d")),
+        tags$td(class = if (filled) "pos" else "mut",
+                orders_outcome_text(r),
+                if (mismatch) tags$span(class = "neg",
+                  sprintf(" \u00b7 заказано %g", r$quantity))),
+        tags$td(class = "mut", r$user))
+    })
+    tags$table(
+      tags$thead(tags$tr(tags$th("Когда"), tags$th("Бумага"),
+                         tags$th(class = "r", "Заказано"),
+                         tags$th("Исполнено"), tags$th("Кто"))),
+      tags$tbody(rows))
+  }
+
   output$ord_table <- renderUI({
+    if (identical(ord_view(), "orders")) return(ord_orders_ui())
     l <- lots_now()
     if (nrow(l) == 0) {
       return(empty_state("Сделок по счёту ещё нет."))

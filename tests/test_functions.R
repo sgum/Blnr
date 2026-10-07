@@ -117,11 +117,25 @@ ok("в реестре 24 инструмента", nrow(WATCHLIST) == 24)
 # GOOGL и GOOG — разные бумаги с разной ценой. Счёт держит класс A, модель
 # знает только GOOG, поэтому подменять одну другой нельзя.
 ok("GOOGL и GOOG различаются",
-   all(c("GOOG", "GOOGL") %in% WATCHLIST$ticker))
-ok("у GOOGL нет строки модели",
-   is.na(WATCHLIST[ticker == "GOOGL", name_model]))
+   !identical(WATCHLIST[ticker == "GOOGL", name_ru], WATCHLIST[ticker == "GOOG", name_ru]))
+# Классы акций одной компании делят СТРОКУ МОДЕЛИ, и это сознательно: прогноз
+# даёт относительный рост, а он у классов общий; различаются они правом
+# голоса. Отказ применять строку «Google» к GOOGL оставлял позицию владельца
+# без сравнения с моделью при том, что прогноз в файле был (07.10.2026).
+ok("GOOGL и GOOG делят строку модели «Google»",
+   identical(WATCHLIST[ticker == "GOOGL", name_model], "Google") &&
+   identical(WATCHLIST[ticker == "GOOG", name_model], "Google"))
+ok("одна строка модели раскладывается на ОБА тикера",
+   identical(sort(tickers_by_model_name("Google")), c("GOOG", "GOOGL")))
+# Но совпадать имена могут только у намеренных пар: случайный дубль увёл бы
+# чужую строку модели к не той бумаге.
+ok("других дублей среди имён модели нет",
+   {
+     nm <- tolower(trimws(WATCHLIST$name_model))
+     dups <- unique(nm[duplicated(nm) & !is.na(nm)])
+     identical(dups, "google")
+   })
 ok("тикеры уникальны",          !any(duplicated(WATCHLIST$ticker)))
-ok("имена модели уникальны",    !any(duplicated(tolower(trimws(WATCHLIST$name_model)))))
 ok("индексов в реестре нет",
    !any(c("SPX", "DJI", "IXIC") %in% WATCHLIST$ticker))
 

@@ -176,13 +176,17 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
 .bd--plot>div,.bd--plot .plotly,.bd--plot .html-widget{height:100%!important}
 .bd--flush{padding:0;display:flex;flex-direction:column}
 .empty{padding:14px 12px;font-size:12px;color:var(--dim)}
-/* Строка отдельной покупки под строкой бумаги. Тусклее и с отступом: это
-   разбивка того же, что в строке выше, а не новая позиция. */
-.rk tr.lot td{background:#fbfcfd;color:var(--dim);font-size:11px;
-  border-bottom:1px solid #f4f6f8}
-.rk tr.lot td.nm{padding-left:14px;font-weight:600}
-.rk tr.lot .lot-mark{color:var(--faint);margin-right:5px}
-.rk tr.lot:hover td{background:#fff7e6}
+/* Вторая и последующие покупки той же бумаги. Строка полноценная — это
+   отдельное решение со своим учётом, — но верхняя граница убрана, чтобы
+   покупки одной бумаги читались группой. */
+.rk tr.lot-more td{border-top:0}
+/* Дата покупки в имени строки: именно она отличает одно решение по бумаге от
+   другого. Тусклее тикера — это уточнение, а не вторая бумага. */
+.rk td.nm .lot-tag{color:var(--faint);font-weight:600;font-size:10.5px;
+  margin-left:4px}
+
+.ord-switch{flex:none;padding:6px 8px;border-bottom:1px solid var(--border);
+  background:var(--muted)}
 
 /* --- журнал решений: сделка от входа до выхода --- */
 .lots{width:100%;border-collapse:collapse;font-size:11px}

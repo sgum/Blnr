@@ -28,6 +28,19 @@
 
 # Сопоставляет имя инструмента с известным тикером (без учёта регистра,
 # по вхождению алиаса). NA, если сопоставить не удалось.
+# ВСЕ тикеры реестра, у которых такая подпись строки модели. Их может быть
+# больше одного: классы акций одной компании (GOOG и GOOGL) делят строку
+# «Google», потому что прогноз — это относительный рост, а он у классов общий.
+# Возвращать только первый значило бы оставить вторую бумагу без сравнения с
+# моделью при том, что прогноз в файле есть.
+tickers_by_model_name <- function(name) {
+  wl <- watchlist_all()
+  key <- tolower(trimws(as.character(name)[1]))
+  hit <- which(tolower(trimws(wl$name_model)) == key)
+  if (length(hit) == 0) return(character(0))
+  wl$ticker[hit]
+}
+
 match_ticker_column <- function(header) {
   # Сопоставление идёт ТОЧНЫМ совпадением с реестром R/watchlist.R
   # (поле name_model — подпись строки ровно как в Q_mean_var), а не поиском
@@ -109,14 +122,15 @@ parse_forecast_file <- function(path, sheet = NULL, as_fraction = TRUE,
   mult <- if (isTRUE(as_fraction)) 100 else 1
 
   rows <- lapply(data_rows, function(i) {
-    tkr <- match_ticker_column(labels[i])
-    if (is.na(tkr)) return(NULL)
+    tkrs <- tickers_by_model_name(labels[i])
+    if (length(tkrs) == 0) return(NULL)
     vals <- suppressWarnings(as.numeric(unlist(raw[i, 3:(2 + n_steps)], use.names = FALSE)))
-    data.table::data.table(
+    # Одна строка модели — на каждый свой тикер: см. tickers_by_model_name.
+    data.table::rbindlist(lapply(tkrs, function(tk) data.table::data.table(
       date = step_dates,
-      ticker = tkr,
+      ticker = tk,
       forecast_growth_pct = vals * mult
-    )
+    )))
   })
   rows <- rows[!vapply(rows, is.null, logical(1))]
   if (length(rows) == 0) {
