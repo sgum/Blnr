@@ -308,6 +308,40 @@ exante_place_order <- function(account_id, symbol_id, side, quantity,
        payload = payload)
 }
 
+# ОТМЕНА поручения. Та же граница, что и у отправки: ничего не уходит на счёт
+# без apply = TRUE, и вызывается это из единственного обработчика по явному
+# нажатию владельца.
+#
+# Отменить можно только то, что ещё НЕ исполнено. Рыночный приказ, поданный
+# при закрытой бирже, стоит в очереди до открытия — вот его и имеет смысл
+# снимать; исполненную сделку отменить нельзя ничем, обратная покупка пройдёт
+# уже по другой цене.
+exante_cancel_order <- function(order_id, apply = FALSE) {
+  oid <- as.character(order_id)[1]
+  if (is.na(oid) || !nzchar(oid)) return(list(error = "no_order_id"))
+  payload <- list(action = "cancel")
+  if (!isTRUE(apply)) return(list(dry_run = TRUE, order_id = oid, payload = payload))
+  creds <- exante_credentials()
+  if (is.null(creds)) return(list(error = "no_credentials"))
+  resp <- tryCatch(
+    httr::POST(paste0(exante_base_url(), "/trade/3.0/orders/", oid),
+               exante_auth_header(creds),
+               httr::content_type_json(),
+               body = jsonlite::toJSON(payload, auto_unbox = TRUE),
+               httr::timeout(30)),
+    error = function(e) e
+  )
+  if (inherits(resp, "condition")) {
+    return(list(error = "request_failed", message = conditionMessage(resp)))
+  }
+  txt <- httr::content(resp, as = "text", encoding = "UTF-8")
+  if (httr::status_code(resp) >= 400) {
+    return(list(error = "http_error", status = httr::status_code(resp),
+                message = substr(txt, 1, 400)))
+  }
+  list(ok = TRUE, status = httr::status_code(resp), order_id = oid)
+}
+
 # symbolId для тикера: биржу берём из уже известных позиций счёта, а если
 # бумаги в портфеле нет — из истории операций. Гадать суффикс нельзя:
 # "GS.NYSE" и "GS.NASDAQ" — разные инструменты, и поручение ушло бы не туда.

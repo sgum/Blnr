@@ -372,6 +372,18 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
   font-size:11.5px;line-height:18px;border-radius:6px;border-color:var(--border)}
 .blnr .selectize-dropdown{font-size:11.5px}
 .blnr .shiny-input-container{width:auto!important}
+/* Выпадающий список в ШАПКЕ карточки должен стоять в один ряд с кнопками и
+   быть той же высоты. По умолчанию Shiny отдаёт его контейнер с собственными
+   отступами и высотой около 34px, из-за чего список выпирал над сегментами
+   «График / Справочник / Журнал» и шапка выглядела собранной наспех. */
+.ch .shiny-input-container{margin:0;padding:0;display:flex;align-items:center}
+.ch .form-group{margin:0}
+.ch .selectize-control{margin:0;width:100%}
+.ch .selectize-input{min-height:24px;height:24px;line-height:18px;
+  padding:2px 22px 2px 8px}
+.ch .selectize-input input{margin:0;line-height:18px}
+.ch select.form-control{height:24px;padding:2px 24px 2px 8px;font-size:11.5px;
+  border-radius:6px;border-color:var(--border);line-height:18px}
 
 /* Уже 1180px колонки складываются в одну, экран начинает прокручиваться, и
    высоты приходится задавать явно: в потоке без фиксированной высоты строка

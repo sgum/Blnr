@@ -1066,11 +1066,19 @@ shinyServer(function(input, output, session) {
       # Бумага выбирается ИЗ РЕЕСТРА НАБЛЮДЕНИЯ: покупать вслепую по тикеру,
       # набранному руками, нельзя — на такую бумагу нет ни ряда цен, ни
       # прогноза, и в портфеле она станет слепым пятном.
+      # В списке помечаем, ЧТО УЖЕ В ПОРТФЕЛЕ. Без пометки две похожие бумаги
+      # (Alphabet класса A и C) различались только суффиксом тикера, и выбрать
+      # не ту было проще, чем ту: 07.10.2026 так ушло поручение на GOOG при
+      # позиции в GOOGL.
       if (identical(side, "buy"))
-        selectInput("trade_ticker", "Бумага", width = "100%",
-                    choices = stats::setNames(as.list(wl$ticker),
-                                              paste0(wl$ticker, " \u00b7 ", wl$name_ru)),
-                    selected = if (!is.na(tk) && tk %in% wl$ticker) tk else wl$ticker[1]),
+        local({
+          held <- unique(m[quantity_at > 0, ticker])
+          lbl <- paste0(wl$ticker, " \u00b7 ", wl$name_ru,
+                        ifelse(wl$ticker %in% held, "  \u2022 в портфеле", ""))
+          selectInput("trade_ticker", "Бумага", width = "100%",
+                      choices = stats::setNames(as.list(wl$ticker), lbl),
+                      selected = if (!is.na(tk) && tk %in% wl$ticker) tk else wl$ticker[1])
+        }),
       numericInput("trade_qty", "Количество",
                    value = if (identical(side, "sell") && max_qty > 0) max_qty else 1,
                    min = 1, step = 1,
@@ -1162,6 +1170,63 @@ shinyServer(function(input, output, session) {
                "Ориентировочно ", tags$b(fmt_money(est)),
                " по последней цене ", fmt_money(px, 2), ".")
     )
+  })
+
+  # Отмена поручения. Как и отправка — через окно подтверждения: отмена
+  # необратима в том смысле, что заново поручение придётся подавать руками, и
+  # цена к тому моменту будет другой.
+  observeEvent(input$order_cancel, {
+    req(user_can_trade(USER$login))
+    oid <- as.character(input$order_cancel)
+    o <- tryCatch(orders_now(), error = function(e) orders_empty())
+    r <- o[order_id == oid]
+    req(nrow(r) > 0)
+    if (!orders_cancellable(r[1])) {
+      showNotification("Это поручение уже нельзя отменить: оно исполнено или снято.",
+                        type = "warning", duration = 10)
+      return(invisible(NULL))
+    }
+    cancel_req(oid)
+    showModal(modalDialog(
+      title = "Отменить поручение",
+      size = "s", easyClose = TRUE,
+      footer = tagList(modalButton("Оставить"),
+                       actionButton("cancel_confirm", "Отменить поручение",
+                                    class = "btn-trade")),
+      tags$p(style = "font-size:12px;color:#646b78",
+             "Снимается поручение, которое ещё не исполнилось. Подать его ",
+             "заново можно будет только руками, и цена к тому моменту будет ",
+             "другой."),
+      tags$div(class = "wl-msg ok",
+               tags$b(r$symbol[1]), " \u00b7 ",
+               if (identical(r$side[1], "buy")) "покупка" else "продажа",
+               " ", r$quantity[1], " шт. от ", format(r$at[1], "%d.%m %H:%M"))
+    ))
+  })
+
+  cancel_req <- reactiveVal(NULL)
+
+  observeEvent(input$cancel_confirm, {
+    if (!user_can_trade(USER$login)) {
+      store_append_order(USER$login %||% "?", "cancel", "?", 0, "нет права",
+                         "пользователь не в списке BLNR_TRADERS")
+      removeModal(); return(invisible(NULL))
+    }
+    oid <- cancel_req(); req(!is.null(oid))
+    res <- exante_cancel_order(oid, apply = TRUE)
+    removeModal()
+    if (isTRUE(res$ok)) {
+      orders_mark_cancelled(oid, note = paste("отменено", USER$login %||% "?"))
+      cat(sprintf("[TRADE] %s cancel %s -> OK\n", USER$login %||% "?", oid))
+      showNotification("Поручение отменено.", type = "message", duration = 8)
+      ledger_bump()
+    } else {
+      cat(sprintf("[TRADE] %s cancel %s -> %s\n", USER$login %||% "?", oid,
+                  paste(res$error, res$status %||% "")))
+      showNotification(paste("Брокер не отменил поручение:",
+                             substr(res$message %||% res$error, 1, 200)),
+                        type = "error", duration = 20)
+    }
   })
 
   # ЕДИНСТВЕННОЕ место, отправляющее поручение.
@@ -1405,12 +1470,26 @@ shinyServer(function(input, output, session) {
                 orders_outcome_text(r),
                 if (mismatch) tags$span(class = "neg",
                   sprintf(" \u00b7 заказано %g", r$quantity))),
-        tags$td(class = "mut", r$user))
+        tags$td(class = "mut", r$user),
+        # ОТМЕНА — только у неисполненного и только владельцу счёта. У
+        # исполненной сделки отменять нечего, и кнопка над ней обещала бы
+        # невозможное.
+        tags$td(class = "r",
+          if (orders_cancellable(r) && user_can_trade(USER$login))
+            tags$button(class = "tr-btn sell",
+              title = sprintf(paste0("Отменить неисполненное поручение: %s %g шт. ",
+                                     "Отменяется только то, что ещё не исполнилось."),
+                              r$symbol, r$quantity),
+              onclick = sprintf(
+                "Shiny.setInputValue('order_cancel','%s',{priority:'event'})", r$order_id),
+              "\u00d7")
+          else tags$span(class = "mut", "\u2014")))
     })
     tags$table(
       tags$thead(tags$tr(tags$th("Когда"), tags$th("Бумага"),
                          tags$th(class = "r", "Заказано"),
-                         tags$th("Исполнено"), tags$th("Кто"))),
+                         tags$th("Исполнено"), tags$th("Кто"),
+                         tags$th(class = "r", ""))),
       tags$tbody(rows))
   }
 

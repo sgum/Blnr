@@ -1269,6 +1269,44 @@ local({
   ok("и не портит новые колонки",
      identical(j5[symbol == "AMD.NASDAQ", order_id], "ord-9"))
 
+  # --- отмена неисполненного ------------------------------------------------
+  # Отменять можно только то, что ещё не исполнилось: над исполненной сделкой
+  # кнопка обещала бы невозможное.
+  local({
+    mk <- function(status, filled = NA_real_, bs = NA_character_, oid = "x1")
+      data.table(order_id = oid, status = status, filled_qty = filled,
+                 broker_status = bs)
+    ok("неисполненное отменяется", orders_cancellable(mk("отправлено")))
+    ok("исполненное — нет", !orders_cancellable(mk("отправлено", 3, "filled")))
+    ok("уже снятое — нет", !orders_cancellable(mk("отправлено", NA, "cancelled")))
+    ok("отклонённое брокером — нет", !orders_cancellable(mk("отправлено", NA, "rejected")))
+    ok("отказ стенда — нет", !orders_cancellable(mk("отказ")))
+    ok("без идентификатора — нет",
+       !orders_cancellable(mk("отправлено", oid = NA_character_)))
+    # Пустой статус брокера означает «ещё не сверяли», а не «исполнено»:
+    # поручение, отправленное минуту назад, отменить как раз нужно.
+    ok("несверенное считается отменяемым",
+       orders_cancellable(mk("отправлено", NA, "")))
+    ok("pending отменяется", orders_cancellable(mk("отправлено", NA, "pending")))
+  })
+
+  # Отмена без apply НИЧЕГО не отправляет — та же граница, что у покупки.
+  ok("отмена по умолчанию только сухой прогон",
+     isTRUE(exante_cancel_order("abc")$dry_run))
+  ok("и тело запроса — именно отмена",
+     identical(exante_cancel_order("abc")$payload$action, "cancel"))
+  ok("без идентификатора отмена не собирается",
+     identical(exante_cancel_order(NA_character_)$error, "no_order_id"))
+
+  # Отметка в журнале.
+  store_append_order("s.gumerov", "buy", "GOOG.NASDAQ", 3, "отправлено",
+                     order_id = "ord-c1")
+  orders_mark_cancelled("ord-c1", note = "отменено s.gumerov")
+  jc <- orders_read()[order_id == "ord-c1"]
+  ok("отменённое помечено в журнале",
+     identical(jc$status[1], "отменено") && identical(jc$broker_status[1], "cancelled"))
+  ok("и больше не предлагается к отмене", !orders_cancellable(jc[1]))
+
   # --- разбор ответа брокера ------------------------------------------------
   ok("orderId достаётся из массива поручений",
      identical(orders_extract_id(list(list(orderId = "abc"))), "abc"))
@@ -1339,6 +1377,41 @@ local({
                     price_of = function(tk) 140)
   ok("на раннюю дату видна только первая покупка",
      nrow(l4) == 1L && isTRUE(all.equal(l4$qty, 10)))
+
+  # ИНВАРИАНТ: сумма открытых сделок обязана совпадать с позицией. Иначе
+  # таблица показывает бумагу, которой на счёте нет — 07.10.2026 так всплыли
+  # 10 акций Morgan Stanley при нулевой позиции: продажа 2024 года превышала
+  # тогдашний остаток, её хвост отбрасывался, и остаток следующей покупки
+  # оставался «открытым» навсегда.
+  over <- rbindlist(list(
+    ev("2026-09-01", "MS.NYSE", 300, 115),
+    ev("2026-09-02", "MS.NYSE", -10, 126),
+    ev("2026-09-03", "MS.NYSE", -300, 126),   # продано больше, чем было
+    ev("2026-09-04", "MS.NYSE", 100, 126),
+    ev("2026-09-05", "MS.NYSE", -90, 139),
+    ev("2026-09-06", "MS.NYSE", 100, 110),
+    ev("2026-09-07", "MS.NYSE", -100, 141)))
+  lo <- ledger_lots(over, as_of = as.Date("2026-09-30"),
+                    price_of = function(tk) 150)
+  ok("непокрытая продажа не оставляет фантомной позиции",
+     isTRUE(all.equal(sum(lo[open == TRUE, qty]), 0)) || nrow(lo[open == TRUE]) == 0L)
+
+  # То же, но проверкой против самого реестра: два разных расчёта об одном.
+  led_over <- rbindlist(lapply(seq_len(nrow(over)), function(i) rbindlist(list(
+    data.table(id = i*2L, value_date = over$value_date[i], type = "TRADE",
+               symbol = over$symbol[i], asset = over$symbol[i],
+               amount = over$qty[i], price = over$price[i],
+               order_id = over$order_id[i]),
+    data.table(id = i*2L+1L, value_date = over$value_date[i], type = "TRADE",
+               symbol = over$symbol[i], asset = "USD",
+               amount = -over$qty[i]*over$price[i], price = NA_real_,
+               order_id = over$order_id[i])))))
+  pos_qty <- ledger_positions_at(led_over, as.Date("2026-09-30"))[ticker == "MS", quantity]
+  lot_qty <- sum(ledger_lots(ledger_events(led_over), as.Date("2026-09-30"),
+                             price_of = function(tk) 150)[open == TRUE, qty])
+  if (length(pos_qty) == 0) pos_qty <- 0
+  ok("сумма открытых сделок совпадает с позицией реестра",
+     isTRUE(all.equal(as.numeric(lot_qty), as.numeric(pos_qty))))
 
   # Продажа без покупки в истории не выдумывает цену входа.
   e3 <- rbindlist(list(ev("2026-09-20", "ZZ.NYSE", -5, 50)))

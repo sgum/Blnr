@@ -48,12 +48,19 @@ WATCHLIST <- data.table::data.table(
                  "General Electric", "BP", "Shell", "Chevron", "Goldman Sachs",
                  "Morgan Stanley Bank", "JPMorgan Chase & Co", "SAP", "Ford",
                  "Gold", "Oil", "Google"),
-  name_ru = c("Apple", "NVIDIA", "Microsoft", "Tesla", "Alphabet", "Amazon",
+  # ИМЯ ОБЯЗАНО ОТЛИЧАТЬ БУМАГУ ОТ ПОХОЖЕЙ. Названия «Alphabet» и «Alphabet
+  # класс A» выглядят как одно и то же с уточнением, и в выпадающем списке
+  # покупки первым стоял GOOG — владелец выбрал «Google» и купил класс C,
+  # хотя в портфеле у него класс A (07.10.2026). Классы различаются правом
+  # голоса и ценой, и по имени это должно быть видно БЕЗ знания тикера.
+  name_ru = c("Apple", "NVIDIA", "Microsoft", "Tesla",
+              "Alphabet класс C (без голоса)", "Amazon",
               "AMD", "Meta", "Netflix", "Intel", "IBM", "General Motors",
-              "General Electric", "BP", "Shell", "Chevron", "Goldman Sachs",
-              "Morgan Stanley", "JPMorgan Chase", "SAP", "Ford",
+              "General Electric", "BP", "Shell", "Chevron",
+              "Goldman Sachs (банк GS)",
+              "Morgan Stanley (банк MS)", "JPMorgan Chase", "SAP", "Ford",
               "Золото (ETF GLD)", "Нефть WTI (ETF USO)",
-              "Alphabet класс A")
+              "Alphabet класс A (с голосом)")
 )
 
 # Глубина ретроспективы по умолчанию — 120 торговых дней: столько же берёт

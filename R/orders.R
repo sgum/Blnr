@@ -14,6 +14,8 @@
 #      бумага» видна сразу, в тот же день, а не всплывает неделей позже;
 #   2) журнал обязан быть НА ЭКРАНЕ. Запись, которую не читают, не работает.
 
+if (!exists("%||%")) `%||%` <- function(a, b) if (is.null(a) || length(a) == 0) b else a
+
 ORDERS_COLS <- c("at", "user", "side", "symbol", "quantity", "status", "detail",
                  "order_id", "filled_qty", "fill_price", "filled_at",
                  "broker_status")
@@ -135,6 +137,31 @@ orders_reconcile <- function(max_age_days = 14, get_order = NULL, now = Sys.time
   }
   if (changed) orders_write(dt)
   orders_read()
+}
+
+# Можно ли ещё отменить поручение. Отменяется только НЕИСПОЛНЕННОЕ: у
+# исполненной сделки отменять нечего, а кнопка над ней обещала бы невозможное.
+# Пустой статус брокера трактуем как «похоже, ещё живо»: поручение, которое
+# стенд отправил минуту назад и не успел сверить, отменить как раз нужно.
+orders_cancellable <- function(row) {
+  if (is.na(row$order_id) || !nzchar(row$order_id)) return(FALSE)
+  if (!identical(row$status, "отправлено")) return(FALSE)
+  if (is.finite(row$filled_qty) && row$filled_qty > 0) return(FALSE)
+  bs <- tolower(as.character(row$broker_status %||% ""))
+  if (is.na(bs) || !nzchar(bs)) return(TRUE)
+  !(bs %in% c("filled", "cancelled", "canceled", "rejected"))
+}
+
+# Отметить поручение отменённым в журнале.
+orders_mark_cancelled <- function(order_id, note = "") {
+  dt <- orders_read()
+  i <- which(dt$order_id == as.character(order_id)[1])
+  if (length(i) == 0) return(invisible(FALSE))
+  data.table::set(dt, i = i, j = "status", value = "отменено")
+  data.table::set(dt, i = i, j = "broker_status", value = "cancelled")
+  if (nzchar(note)) data.table::set(dt, i = i, j = "detail", value = note)
+  orders_write(dt)
+  invisible(TRUE)
 }
 
 # Короткая строка о том, что вышло из поручения, — для экрана.
