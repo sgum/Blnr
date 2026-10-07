@@ -38,10 +38,27 @@ empty_ledger <- function() {
 # Денежный остаток на дату: сумма всех денежных движений по эту дату
 # включительно. Не «сегодняшний кэш минус последующее», а прямой подсчёт —
 # так результат не зависит от того, свежа ли сводка.
+# Дата, по которой операция считается СЛУЧИВШЕЙСЯ. Это дата сделки
+# (trade_date), а не дата расчётов (value_date, обычно T+1). Стенд считает
+# всё на последнюю торговую сессию из хранилища свечей, и при отборе по дате
+# расчётов вчерашняя покупка оказывалась «ещё не наступившей»: 07.10.2026
+# позиция AMD показывала 8 штук по 613.89 вместо 11 по 623.47, а наличные были
+# завышены на потраченные 1 947 долларов. Сводка брокера учитывает сделку
+# сразу, поэтому отбор по дате расчётов расходился ещё и с ней.
+# Старый файл реестра колонки не имеет — для него дата сделки равна дате
+# расчётов, и поведение остаётся прежним.
+ledger_effective_date <- function(dt) {
+  vd <- as.Date(dt$value_date)
+  if (!"trade_date" %in% names(dt)) return(vd)
+  td <- as.Date(dt$trade_date)
+  data.table::fifelse(is.na(td), vd, td)
+}
+
 ledger_cash_at <- function(ledger, as_of = Sys.Date(), currency = "USD") {
   if (nrow(ledger) == 0) return(NA_real_)
   target <- as.Date(as_of)
-  sum(ledger[asset == currency & value_date <= target, amount], na.rm = TRUE)
+  eff <- ledger_effective_date(ledger)
+  sum(ledger[asset == currency & eff <= target, amount], na.rm = TRUE)
 }
 
 # Операции по бумагам, собранные в события: одно событие = один ордер.
@@ -80,6 +97,8 @@ ledger_events <- function(ledger, currency = "USD") {
 
   # trade_date может отсутствовать в самодельных фикстурах — подстрахуемся.
   if (!"trade_date" %in% names(inst)) inst[, trade_date := value_date]
+  inst[, trade_date := as.Date(trade_date)]
+  inst[is.na(trade_date), trade_date := value_date]
   ev <- inst[, .(value_date = min(value_date),
                  trade_date = min(trade_date),
                  qty = sum(amount, na.rm = TRUE),
@@ -89,7 +108,7 @@ ledger_events <- function(ledger, currency = "USD") {
   cs <- cash[, .(cash = sum(amount, na.rm = TRUE)), by = .(grp)]
   ev <- merge(ev, cs, by = "grp", all.x = TRUE)
   ev[is.na(cash), cash := 0]
-  data.table::setorder(ev, value_date, symbol)
+  data.table::setorder(ev, trade_date, value_date, symbol)
   # grp — это orderId сделки (или суррогат «бумага@дата» для зачислений). Он
   # нужен журналу решений: по нему сделка связывается с поручением, которое
   # отправили со стенда.
@@ -109,11 +128,11 @@ ledger_positions_at <- function(ledger, as_of = Sys.Date(), currency = "USD") {
   ev <- ledger_events(ledger, currency)
   if (nrow(ev) == 0) return(empty)
   target <- as.Date(as_of)
-  ev <- ev[value_date <= target]
+  ev <- ev[trade_date <= target]
   if (nrow(ev) == 0) return(empty)
 
   out <- lapply(split(ev, ev$symbol), function(e) {
-    data.table::setorder(e, value_date)
+    data.table::setorder(e, trade_date, value_date)
     qty <- 0; cost <- 0; opened <- as.Date(NA); last_buy <- as.Date(NA)
     for (i in seq_len(nrow(e))) {
       dq <- e$qty[i]; dc <- e$cash[i]
@@ -121,14 +140,14 @@ ledger_positions_at <- function(ledger, as_of = Sys.Date(), currency = "USD") {
       # в 2024-м, полностью распродана в 2025-м и куплена заново 24.09.2026 —
       # и до этой правки позиция показывала возраст 737 дней вместо нуля, то
       # есть приписывала себе движение цены за время, когда бумаги не было.
-      if (abs(qty) < 1e-9 && dq > 0) opened <- e$value_date[i]
+      if (abs(qty) < 1e-9 && dq > 0) opened <- e$trade_date[i]
       if (dq > 0) {
         qty <- qty + dq
         cost <- cost + (-dc)          # покупка: деньги ушли, стоимость выросла
         # Дата ПОСЛЕДНЕЙ покупки: от неё отсчитывается сравнение с моделью.
         # Докупка сдвигает точку отсчёта — иначе прогноз мерился бы от входа,
         # которого в текущем виде позиции уже нет.
-        last_buy <- e$value_date[i]
+        last_buy <- e$trade_date[i]
       } else if (dq < 0 && qty > 0) {
         frac <- min(1, (-dq) / qty)   # продажа: доля закрытого лота
         cost <- cost * (1 - frac)
@@ -146,7 +165,7 @@ ledger_positions_at <- function(ledger, as_of = Sys.Date(), currency = "USD") {
       quantity = qty, cost = cost,
       avg_price = if (qty > 0) cost / qty else NA_real_,
       opened_date = opened, last_buy_date = last_buy,
-      first_date = min(e$value_date), last_date = max(e$value_date)
+      first_date = min(e$trade_date), last_date = max(e$trade_date)
     )
   })
   res <- data.table::rbindlist(out)

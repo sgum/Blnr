@@ -12,6 +12,13 @@
 # покупки, дата и цена продажи, вложено, выручено, результат. Пока бумага не
 # продана, результат считается по текущей цене и помечается как незакрытый.
 #
+# ДАТА СДЕЛКИ, А НЕ ДАТА РАСЧЁТОВ. Решение датируется днём, когда оно принято
+# и исполнено на бирже (trade_date), а не днём зачисления бумаг (value_date,
+# T+1). Отбор по дате расчётов прятал вчерашнюю покупку: 07.10.2026 журнал
+# показывал по AMD одну сделку от 24.09 на 8 штук, хотя 06.10 куплено ещё 3 по
+# 649.03 и на счёте было 11. Сделки при этом НЕ сливались — вторая просто не
+# попадала в отбор.
+#
 # СОПОСТАВЛЕНИЕ ПРОДАЖ С ПОКУПКАМИ — FIFO: продаётся то, что куплено раньше.
 # Это не единственный способ (бывает LIFO, бывает по средней), но единственный,
 # который можно объяснить словами и проверить руками: «продал три штуки —
@@ -36,9 +43,13 @@ lots_empty <- function() {
 ledger_lots <- function(events, as_of = Sys.Date(),
                         price_of = function(tk) NA_real_) {
   if (is.null(events) || nrow(events) == 0) return(lots_empty())
-  ev <- data.table::copy(events)[value_date <= as.Date(as_of)]
+  ev <- data.table::copy(events)
+  if (!"trade_date" %in% names(ev)) ev[, trade_date := value_date]
+  ev[, trade_date := as.Date(trade_date)]
+  ev[is.na(trade_date), trade_date := value_date]
+  ev <- ev[trade_date <= as.Date(as_of)]
   if (nrow(ev) == 0) return(lots_empty())
-  data.table::setorder(ev, value_date)
+  data.table::setorder(ev, trade_date, value_date)
 
   out <- list()
   for (sym in unique(ev$symbol)) {
@@ -72,7 +83,7 @@ ledger_lots <- function(events, as_of = Sys.Date(),
           if (qty <= 1e-9) next
         }
         open_lots[[length(open_lots) + 1L]] <- list(
-          date = e$value_date[i], price = px, qty = qty,
+          date = e$trade_date[i], price = px, qty = qty,
           order_id = e$order_id[i])
         next
       }
@@ -84,7 +95,7 @@ ledger_lots <- function(events, as_of = Sys.Date(),
         take <- min(lot$qty, left)
         out[[length(out) + 1L]] <- data.table::data.table(
           symbol = sym, open_date = lot$date, open_price = lot$price,
-          qty = take, close_date = e$value_date[i], close_price = px,
+          qty = take, close_date = e$trade_date[i], close_price = px,
           open = FALSE, order_id = lot$order_id)
         lot$qty <- lot$qty - take
         left <- left - take

@@ -1424,6 +1424,59 @@ local({
   d <- lots_held_days(l2, as_of = as.Date("2026-09-30"))
   ok("срок держания считается по открытой сделке", identical(d[1], 5L))
   ok("открытые сделки отбираются", nrow(lots_open(l)) == 1L)
+
+  # ДАТА СДЕЛКИ ПРОТИВ ДАТЫ РАСЧЁТОВ. Покупка 06.10 с расчётами 07.10 обязана
+  # быть видна на 06.10 — стенд считает всё на последнюю торговую сессию, и
+  # до этой правки такая сделка пропадала: позиция AMD показывала 8 штук
+  # вместо 11, а наличные были завышены на потраченное. Вход подобран так,
+  # чтобы без правки проверка отвечала «нет»: при отборе по value_date
+  # количество на 06.10 равно 8, а не 11.
+  led_td <- rbindlist(list(
+    data.table(id = 1L, value_date = as.Date("2026-09-24"),
+               trade_date = as.Date("2026-09-24"), type = "TRADE",
+               symbol = "AMD.NASDAQ", asset = "AMD.NASDAQ", amount = 8,
+               price = 613.89, order_id = "o1"),
+    data.table(id = 2L, value_date = as.Date("2026-09-24"),
+               trade_date = as.Date("2026-09-24"), type = "TRADE",
+               symbol = "AMD.NASDAQ", asset = "USD", amount = -4911.12,
+               price = NA_real_, order_id = "o1"),
+    data.table(id = 3L, value_date = as.Date("2026-10-07"),
+               trade_date = as.Date("2026-10-06"), type = "TRADE",
+               symbol = "AMD.NASDAQ", asset = "AMD.NASDAQ", amount = 3,
+               price = 649.03, order_id = "o2"),
+    data.table(id = 4L, value_date = as.Date("2026-10-07"),
+               trade_date = as.Date("2026-10-06"), type = "TRADE",
+               symbol = "AMD.NASDAQ", asset = "USD", amount = -1947.09,
+               price = NA_real_, order_id = "o2")))
+  pos_td <- ledger_positions_at(led_td, as.Date("2026-10-06"))
+  ok("позиция считается по дате сделки, а не расчётов",
+     isTRUE(all.equal(pos_td[ticker == "AMD", quantity], 11)))
+  ok("средняя цена включает вчерашнюю докупку",
+     isTRUE(all.equal(round(pos_td[ticker == "AMD", avg_price], 2), 623.47)))
+  ok("дата последней покупки — день сделки",
+     identical(pos_td[ticker == "AMD", last_buy_date], as.Date("2026-10-06")))
+  ok("до дня сделки докупки ещё нет",
+     isTRUE(all.equal(
+       ledger_positions_at(led_td, as.Date("2026-10-05"))[ticker == "AMD", quantity], 8)))
+
+  lots_td <- ledger_lots(ledger_events(led_td), as.Date("2026-10-06"),
+                         price_of = function(tk) 652.135)
+  ok("журнал решений показывает обе покупки отдельными строками",
+     nrow(lots_td) == 2L && isTRUE(all.equal(sort(lots_td$qty), c(3, 8))))
+  ok("вторая сделка датирована днём покупки",
+     identical(max(lots_td$open_date), as.Date("2026-10-06")))
+
+  ok("наличные уменьшаются в день сделки",
+     isTRUE(all.equal(ledger_cash_at(led_td, as.Date("2026-10-06")),
+                      -4911.12 - 1947.09)))
+  ok("накануне сделки наличные ещё прежние",
+     isTRUE(all.equal(ledger_cash_at(led_td, as.Date("2026-10-05")), -4911.12)))
+
+  # Реестр без колонки trade_date (старый файл) ведёт себя как прежде.
+  led_old <- copy(led_td)[, trade_date := NULL]
+  ok("старый реестр без даты сделки отбирается по дате расчётов",
+     isTRUE(all.equal(
+       ledger_positions_at(led_old, as.Date("2026-10-06"))[ticker == "AMD", quantity], 8)))
 })
 
 cat("== 20. Поручения: по умолчанию НИЧЕГО не отправляется ==\n")
