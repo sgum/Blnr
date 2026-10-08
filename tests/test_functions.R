@@ -2093,6 +2093,22 @@ if (!inherits(ui_render, "condition")) {
      grepl('toggle_id = "wgt_vs_toggle"', srv2, fixed = TRUE) &&
      grepl('toggle_id = "wgt_dyn_toggle"', srv2, fixed = TRUE) &&
      grepl('toggle_id = "wgt_dev_toggle"', srv2, fixed = TRUE))
+
+  # НЕЗАТРОНУТЫЙ сворачиванием график (например «Факт против модели», когда
+  # сворачивают «Динамику счёта») не перерисовывается сам и не узнаёт о новой
+  # высоте контейнера иначе, чем через событие window "resize" — так устроен
+  # htmlwidgets.js (слушатель резайза висит на window, не на контейнере
+  # графика). Без синтетического resize после каждого переключения графики
+  # оставались прежнего пикселя посреди увеличившейся карточки — поймано
+  # владельцем на скриншоте 08.10.2026 сразу после первой версии сворачивания.
+  ok("каждое переключение досылает синтетический resize, когда вёрстка уже на клиенте",
+     grepl("wgt_resize_ping", srv2, fixed = TRUE) &&
+     grepl("session$onFlushed", srv2, fixed = TRUE) &&
+     grepl("dispatchEvent(new Event('resize'))", srv2, fixed = TRUE))
+  ok("resize навешен на все три переключателя, а не только на один",
+     grepl("wgt_vs_open(!isolate(wgt_vs_open())); wgt_resize_ping()", srv2, fixed = TRUE) &&
+     grepl("wgt_dyn_open(!isolate(wgt_dyn_open())); wgt_resize_ping()", srv2, fixed = TRUE) &&
+     grepl("wgt_dev_open(!isolate(wgt_dev_open())); wgt_resize_ping()", srv2, fixed = TRUE))
 }
 
 cat(sprintf("\nИтог: %s\n", if (FAILED == 0L) "все проверки пройдены" else sprintf("ПРОВАЛОВ: %d", FAILED)))

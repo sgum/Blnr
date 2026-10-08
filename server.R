@@ -724,9 +724,25 @@ shinyServer(function(input, output, session) {
   wgt_vs_open  <- reactiveVal(TRUE)   # Факт против модели
   wgt_dyn_open <- reactiveVal(TRUE)   # Динамика счёта
   wgt_dev_open <- reactiveVal(TRUE)   # Результат против модели
-  observeEvent(input$wgt_vs_toggle,  wgt_vs_open(!isolate(wgt_vs_open())))
-  observeEvent(input$wgt_dyn_toggle, wgt_dyn_open(!isolate(wgt_dyn_open())))
-  observeEvent(input$wgt_dev_toggle, wgt_dev_open(!isolate(wgt_dev_open())))
+  # Сетка сама отдаёт соседям высоту свёрнутой карточки — но график, который
+  # сворачивали НЕ его, об этом не узнаёт: htmlwidgets (plotly) пересчитывает
+  # размер только по событию window "resize" (см. htmlwidgets.js — слушатель
+  # висит именно на нём, а не на изменении своего контейнера), а вывод
+  # незатронутого графика при чужом сворачивании не перерисовывается — событие
+  # просто неоткуда взяться. Без этого «Факт против модели»/«График
+  # инструмента» оставались прежнего пикселя посреди увеличившейся карточки
+  # (замечание владельца 08.10.2026, скриншот после сворачивания обоих нижних
+  # виджетов). session$onFlushed откладывает синтетический resize до момента,
+  # когда новая вёрстка уже встала в DOM на клиенте, а не до того, как Shiny
+  # её только отправил — иначе размер читался бы ещё по старой раскладке.
+  wgt_resize_ping <- function() {
+    session$onFlushed(function() {
+      shinyjs::runjs("window.dispatchEvent(new Event('resize'));")
+    }, once = TRUE)
+  }
+  observeEvent(input$wgt_vs_toggle,  { wgt_vs_open(!isolate(wgt_vs_open())); wgt_resize_ping() })
+  observeEvent(input$wgt_dyn_toggle, { wgt_dyn_open(!isolate(wgt_dyn_open())); wgt_resize_ping() })
+  observeEvent(input$wgt_dev_toggle, { wgt_dev_open(!isolate(wgt_dev_open())); wgt_resize_ping() })
 
   # Левая колонка: таблица позиций (по высоте содержимого) и под ней сравнение
   # факта с моделью, которое добирает оставшуюся высоту. Панель сравнения
