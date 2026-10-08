@@ -71,19 +71,41 @@ tip_block <- function(lead, ..., note = NULL) {
 
 # Карточка с шапкой. Заголовок — жирная строка на белом с оранжевой линейкой
 # снизу; цветной «плашки» у шапки нет.
+#
+# СВОРАЧИВАНИЕ (toggle_id + collapsed). Нужно для виджетов, которые при узкой
+# колонке становятся малоинформативными (три нижних графика на мониторе уже
+# при обычной ширине), а освободившееся место должно доставаться растущим
+# таблицам выше — не JS-анимацией высоты, а СЕРВЕРНЫМ решением, что рисовать:
+# свёрнутая карточка — это ТОЛЬКО шапка, без тела и без plotlyOutput вовсе.
+# Тело, которого нет в DOM, не держит место в сетке, и строка/колонка-сетка
+# вокруг карточки автоматически отдаёт освободившуюся высоту соседям (это
+# обычное поведение CSS grid auto/fr, без ручного пересчёта). Плюс: скрытый
+# plotly не остаётся «подвисшим» виджетом неверного размера при повторном
+# раскрытии — он просто создаётся заново с правильными размерами.
 panel <- function(title, ..., tip = NULL, tip_align = "l", sub = NULL,
-                  right = NULL, body_class = NULL) {
+                  right = NULL, body_class = NULL,
+                  toggle_id = NULL, collapsed = FALSE) {
+  toggle_btn <- if (!is.null(toggle_id)) {
+    tags$button(
+      class = "pnl-toggle", type = "button",
+      title = if (collapsed) "Развернуть" else "Свернуть",
+      onclick = sprintf(
+        "Shiny.setInputValue('%s', Math.random(), {priority:'event'})",
+        toggle_id),
+      if (collapsed) "▸" else "▾")
+  }
   tags$section(
-    class = "card",
+    class = paste("card", if (collapsed) "card--collapsed"),
     tags$header(
       class = "ch",
       tags$span(class = "t", title),
       if (!is.null(tip)) info_tip(tip, tip_align),
       if (!is.null(sub)) tags$span(class = "sub", sub),
       tags$span(class = "sp"),
-      right
+      right,
+      toggle_btn
     ),
-    tags$div(class = paste("bd", body_class), ...)
+    if (!collapsed) tags$div(class = paste("bd", body_class), ...)
   )
 }
 

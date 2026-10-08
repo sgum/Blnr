@@ -2054,6 +2054,45 @@ if (!inherits(ui_render, "condition")) {
   ok("высота нижнего ряда задана селектором потомка",
      grepl("\\.blnr-row--bot \\.card\\{height", ui_render$dash) &&
      !grepl("\\.blnr-row--bot>\\.card\\{height", ui_render$dash))
+
+  # СВОРАЧИВАНИЕ нижних виджетов (замечание владельца 08.10.2026): узкая
+  # колонка делает три нижних графика малочитаемыми, а растущей таблице
+  # позиций не хватает высоты — каждый виджет должен сворачиваться
+  # независимо, и свёрнутая карточка обязана отдавать своё место соседям,
+  # а не просто визуально прятать содержимое (display:none держит высоту).
+  pnl_open <- flat(panel("Т", toggle_id = "x_toggle", collapsed = FALSE,
+                         tags$p("тело")))
+  pnl_closed <- flat(panel("Т", toggle_id = "x_toggle", collapsed = TRUE,
+                           tags$p("тело")))
+  ok("развёрнутая карточка показывает тело",
+     grepl("тело", pnl_open, fixed = TRUE) &&
+     grepl("class=\"bd", pnl_open, fixed = TRUE))
+  ok("свёрнутая карточка тело НЕ рисует вовсе (не прячет, а не создаёт)",
+     !grepl("тело", pnl_closed, fixed = TRUE) &&
+     !grepl("class=\"bd", pnl_closed, fixed = TRUE))
+  ok("свёрнутая карточка помечена классом для CSS-свопа высоты строк",
+     grepl("card--collapsed", pnl_closed, fixed = TRUE) &&
+     !grepl("card--collapsed", pnl_open, fixed = TRUE))
+  ok("у обеих есть кнопка-переключатель со своим toggle_id",
+     grepl("x_toggle", pnl_open, fixed = TRUE) &&
+     grepl("x_toggle", pnl_closed, fixed = TRUE))
+  ok("без toggle_id кнопки сворачивания нет (старые панели не меняются)",
+     !grepl("pnl-toggle", flat(panel("Т", tags$p("тело"))), fixed = TRUE))
+
+  ok("стили знают свёрнутую колонку (строки меняются местами auto<->1fr)",
+     grepl("\\.blnr-col--vs-collapsed\\{grid-template-rows", ui_render$dash))
+  ok("нижний ряд не растягивает свёрнутые карточки по высоте соседей",
+     grepl("\\.blnr-row--bot\\{[^}]*align-items:start", ui_render$dash))
+
+  srv2 <- srv
+  ok("три нижних виджета сворачиваются НЕЗАВИСИМО (своя reactiveVal на каждый)",
+     grepl("wgt_vs_open", srv2, fixed = TRUE) &&
+     grepl("wgt_dyn_open", srv2, fixed = TRUE) &&
+     grepl("wgt_dev_open", srv2, fixed = TRUE))
+  ok("каждый переключатель подключён к своей панели в server.R",
+     grepl('toggle_id = "wgt_vs_toggle"', srv2, fixed = TRUE) &&
+     grepl('toggle_id = "wgt_dyn_toggle"', srv2, fixed = TRUE) &&
+     grepl('toggle_id = "wgt_dev_toggle"', srv2, fixed = TRUE))
 }
 
 cat(sprintf("\nИтог: %s\n", if (FAILED == 0L) "все проверки пройдены" else sprintf("ПРОВАЛОВ: %d", FAILED)))

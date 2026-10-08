@@ -713,6 +713,21 @@ shinyServer(function(input, output, session) {
     updateSelectInput(session, "sel_ticker", selected = input$pick_ticker)
   })
 
+  # СВОРАЧИВАНИЕ трёх нижних графиков (замечание владельца 08.10.2026): «Факт
+  # против модели», «Динамика счёта», «Результат против модели» в узкой
+  # колонке становятся малоинформативными, а таблица позиций тем временем
+  # растёт (строка на каждую покупку) и ей самой не хватает высоты. Каждый
+  # виджет сворачивается НЕЗАВИСИМО (TRUE = развёрнут, как было раньше), а
+  # освободившуюся высоту соседние блоки получают сами — это устройство CSS
+  # grid (auto/fr-строки и align-items:start в .blnr-row--bot), а не отдельный
+  # пересчёт здесь.
+  wgt_vs_open  <- reactiveVal(TRUE)   # Факт против модели
+  wgt_dyn_open <- reactiveVal(TRUE)   # Динамика счёта
+  wgt_dev_open <- reactiveVal(TRUE)   # Результат против модели
+  observeEvent(input$wgt_vs_toggle,  wgt_vs_open(!isolate(wgt_vs_open())))
+  observeEvent(input$wgt_dyn_toggle, wgt_dyn_open(!isolate(wgt_dyn_open())))
+  observeEvent(input$wgt_dev_toggle, wgt_dev_open(!isolate(wgt_dev_open())))
+
   # Левая колонка: таблица позиций (по высоте содержимого) и под ней сравнение
   # факта с моделью, которое добирает оставшуюся высоту. Панель сравнения
   # появляется только когда прогноз загружен — иначе колонка остаётся из одной
@@ -766,15 +781,16 @@ shinyServer(function(input, output, session) {
     if (!has_fc) {
       return(tags$div(class = "blnr-col blnr-col--solo", positions))
     }
+    vs_open <- wgt_vs_open()
     tags$div(
-      class = "blnr-col",
+      class = paste("blnr-col", if (!vs_open) "blnr-col--vs-collapsed"),
       positions,
       panel(
         if (is_future()) "Ожидание по модели" else "Факт против модели",
         # Подпись зависит от вида, поэтому она ОТДЕЛЬНЫЙ вывод: столбики
         # меряют от моей цены входа, линии — от базы прогноза, и молчать о
         # такой разнице нельзя (см. vs_time_plot).
-        sub = textOutput("vs_sub", inline = TRUE),
+        sub = if (vs_open) textOutput("vs_sub", inline = TRUE),
         tip = tip_block(
           "Два вида с РАЗНОЙ точкой отсчёта — смотрите подпись карточки.",
           list("На дату", "по каждой бумаге за срок владения: фактический рост от цены входа рядом с прогнозом за тот же срок; расхождение столбиков — повод для решения"),
@@ -783,8 +799,9 @@ shinyServer(function(input, output, session) {
           list("Несколько", "по линии разницы на бумагу, в пп — так они сравнимы на общей шкале"),
           list("Чипы", "выключают бумагу с графика; пунктирный чип — бумаги нет в модели"),
           note = "Зачем «Динамика»: бумага, месяц шедшая по модели и обвалившаяся вчера, и бумага, разошедшаяся с первого дня, дают одинаковый столбик — а решения по ним разные."),
-        right = uiOutput("vs_tabs"),
+        right = if (vs_open) uiOutput("vs_tabs"),
         body_class = "bd--flush",
+        toggle_id = "wgt_vs_toggle", collapsed = !vs_open,
         tags$div(class = "vs",
                  uiOutput("vs_chips"),
                  tags$div(class = "vs-plot",
@@ -1896,6 +1913,7 @@ shinyServer(function(input, output, session) {
     if (nrow(value_series()) > 0) {
       v <- value_series()
       unp <- attr(v, "unpriced") %||% character()
+      dyn_open <- wgt_dyn_open()
       items <- c(items, list(panel(
         "Динамика счёта",
         sub = sprintf("%s — %s", format(min(v$date), "%d.%m.%Y"),
@@ -1904,7 +1922,7 @@ shinyServer(function(input, output, session) {
         # не объясняли ничего: «окно шкалы» — внутренний термин, а по какой
         # период смотришь, не было видно вовсе. Теперь в самой кнопке стоят
         # ДАТЫ, а подсказка говорит, откуда отрезок берётся.
-        right = local({
+        right = if (!dyn_open) NULL else local({
           tl <- timeline_sessions()
           wnd <- if (length(tl)) sprintf("%s \u2014 %s",
                                          format(min(tl), "%d.%m.%y"),
@@ -1939,10 +1957,12 @@ shinyServer(function(input, output, session) {
               paste0(" Сейчас не оценить: ", paste(utils::head(unp, 4), collapse = ", "),
                      if (length(unp) > 4) " и другие" else "") else "")),
         body_class = "bd--plot",
+        toggle_id = "wgt_dyn_toggle", collapsed = !dyn_open,
         plotlyOutput("chart_value", height = "100%")
       )))
     }
     if (nrow(deviation_series()) > 1) {
+      dev_open <- wgt_dev_open()
       items <- c(items, list(panel(
         "Результат против модели",
         sub = "прибыль и убыток, $",
@@ -1953,6 +1973,7 @@ shinyServer(function(input, output, session) {
           list("Разница", "факт минус модель"),
           note = "В деньгах, а не в процентах: падение одной акции IBM на 20% рисовало бы «портфель −20%» при $45 тыс. наличными. Кэш в расчёт не входит — он не растёт и не падает."),
         body_class = "bd--plot",
+        toggle_id = "wgt_dev_toggle", collapsed = !dev_open,
         plotlyOutput("chart_deviation", height = "100%")
       )))
     }

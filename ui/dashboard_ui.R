@@ -148,6 +148,16 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
    и полэкрана уходило в белое поле. */
 .blnr-col{display:grid;gap:8px;min-height:0;grid-template-rows:auto minmax(0,1fr)}
 .blnr-col--solo{grid-template-rows:minmax(0,1fr)}
+/* Факт против модели свёрнут: Позиции становится гибкой строкой (минус
+   высота свёрнутой шапки ниже), а не остаётся на фиксированной auto-высоте
+   с пустым местом под собой. */
+.blnr-col--vs-collapsed{grid-template-rows:minmax(0,1fr) auto}
+/* Нижний ряд: карточки НЕ растягиваются по высоте друг под друга
+   (align-items:start вместо дефолтного stretch). Без этого свёрнутая
+   карточка (только шапка) занимала бы всю высоту строки, равную высоте
+   развёрнутого соседа, и превращалась в пустую коробку с заголовком сверху —
+   строка в гриде просто осталась бы прежнего размера. */
+.blnr-row--bot{align-items:start}
 /* Карточка по высоте содержимого: когда показывать нечего, пусть под ней
    будет фон страницы, а не белое поле на пол-экрана. */
 .blnr-col--compact{grid-template-rows:auto;align-content:start}
@@ -178,6 +188,17 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);
 .ch .sub{font-weight:600;color:var(--dim);font-size:11.5px;white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis}
 .ch .sp{flex:1 1 auto}
+/* Кнопка сворачивания — треугольник, не слово: занимает место иконки, а не
+   строки текста, и не путается с кнопками-вкладками рядом в шапке. */
+.pnl-toggle{flex:none;border:1px solid var(--border);background:var(--surface);
+  color:var(--dim);width:22px;height:22px;border-radius:5px;cursor:pointer;
+  font-size:11px;line-height:1;padding:0}
+.pnl-toggle:hover{border-color:var(--orange);color:var(--text)}
+/* Свёрнутая карточка — высота !important: перебивает и фиксированные 212px
+   нижнего ряда, и 240px из узкоэкранного медиа-запроса ниже. Без !important
+   побеждало бы правило с большей специфичностью (.blnr-row--bot .card), а не
+   то, что добавлено последним. */
+.card--collapsed{height:auto!important}
 .bd{flex:1 1 auto;min-height:0;overflow:auto;padding:6px 8px}
 .bd--plot{overflow:hidden;padding:2px}
 .bd--plot>div,.bd--plot .plotly,.bd--plot .html-widget{height:100%!important}
